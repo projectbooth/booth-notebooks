@@ -1,0 +1,194 @@
+{{- if not (or .Values.identity.issuerUrl .Values.oidc.issuerUrl) }}
+{{- fail "identity.issuerUrl or oidc.issuerUrl is required: the hub verifies every login itself (core-platform-api.md, ADR 0041)" }}
+{{- end }}
+# The JupyterHub hub. It holds this module's credentials (the database DSN, ADR 0053; the
+# workload-minting credential, ADR 0056; its own crypt key/cookie secret) and therefore NEVER runs user
+# code: every kernel runs in a per-user pod the hub creates, holding none of these (ADR 0057).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "booth-notebooks.fullname" . }}-hub
+  labels:
+    {{- include "booth-notebooks.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hub
+spec:
+  # JupyterHub is a single process by design (its state and routing table are not shared across
+  # replicas). Recreate: never two hubs at once, even briefly during an upgrade.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "booth-notebooks.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: hub
+  template:
+    metadata:
+      labels:
+        {{- include "booth-notebooks.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: hub
+      annotations:
+        checksum/config: {{ toJson .Values | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "booth-notebooks.fullname" . }}-hub
+      # The one pod that needs a Kubernetes token: KubeSpawner (hub-rbac.yaml has its Role).
+      automountServiceAccountToken: true
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # JupyterHub exits at startup if the proxy's API isn't reachable yet; on a fresh install that
+      # would crash-loop the hub until the proxy is up (seen on kind). Wait for it instead.
+      initContainers:
+        - name: wait-for-proxy
+          image: "{{ .Values.hub.image.repository }}:{{ .Values.hub.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.hub.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command:
+            - python
+            - -c
+            - |
+              import socket, sys, time
+              for _ in range(180):
+                  try:
+                      socket.create_connection(("{{ include "booth-notebooks.fullname" . }}-proxy-api", 8001), timeout=2).close()
+                      sys.exit(0)
+                  except OSError:
+                      time.sleep(1)
+              sys.exit("the proxy API did not become reachable in 3 minutes")
+      containers:
+        - name: hub
+          image: "{{ .Values.hub.image.repository }}:{{ .Values.hub.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.hub.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: hub
+              containerPort: 8081
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: BOOTH_NOTEBOOKS_HUB_CONNECT_URL
+              value: {{ include "booth-notebooks.hubUrl" . | quote }}
+            - name: BOOTH_NOTEBOOKS_PROXY_API_URL
+              value: "http://{{ include "booth-notebooks.fullname" . }}-proxy-api:8001"
+            - name: BOOTH_NOTEBOOKS_DATABASE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.credentialsSecret.name }}
+                  key: {{ .Values.database.credentialsSecret.key }}
+            - name: JUPYTERHUB_CRYPT_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ include "booth-notebooks.hubSecretName" . }}, key: crypt-key}
+            - name: JPY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef: {name: {{ include "booth-notebooks.hubSecretName" . }}, key: cookie-secret}
+            - name: CONFIGPROXY_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ include "booth-notebooks.hubSecretName" . }}, key: proxy-token}
+            {{- with .Values.identity.issuerUrl }}
+            - name: BOOTH_IDENTITY_ISSUER_URL
+              value: {{ . | quote }}
+            - name: BOOTH_IDENTITY_AUDIENCE
+              value: {{ $.Values.identity.audience | quote }}
+            {{- end }}
+            - name: BOOTH_NOTEBOOKS_IDENTITY_HEADER
+              value: {{ .Values.identity.header | quote }}
+            - name: BOOTH_NOTEBOOKS_ALLOWED_ROLES
+              value: {{ join "," .Values.identity.allowedRoles | quote }}
+            {{- with .Values.oidc.issuerUrl }}
+            - name: BOOTH_OIDC_ISSUER_URL
+              value: {{ . | quote }}
+            - name: BOOTH_OIDC_CLIENT_ID
+              value: {{ $.Values.oidc.clientId | quote }}
+            - name: BOOTH_OIDC_REQUIRE_AUDIENCE
+              value: {{ $.Values.oidc.requireAudience | quote }}
+            {{- end }}
+            # The role is re-derived from this claim (ADR 0041), so it MUST match booth-core's.
+            - name: BOOTH_OIDC_GROUPS_CLAIM
+              value: {{ .Values.oidc.groupsClaim | quote }}
+            {{- if .Values.core.url }}
+            - name: BOOTH_CORE_URL
+              value: {{ .Values.core.url | quote }}
+            {{- end }}
+            {{- if .Values.workloadIdentity.enabled }}
+            - name: BOOTH_WORKLOAD_MINT_DIR
+              value: /etc/booth/workload
+            {{- end }}
+            - name: BOOTH_NOTEBOOKS_SINGLEUSER_IMAGE
+              value: "{{ .Values.singleuser.image.repository }}:{{ .Values.singleuser.image.tag | default .Chart.AppVersion }}"
+            - name: BOOTH_NOTEBOOKS_SINGLEUSER_PULL_POLICY
+              value: {{ .Values.singleuser.image.pullPolicy | quote }}
+            - name: BOOTH_NOTEBOOKS_CPU_GUARANTEE
+              value: {{ .Values.singleuser.cpu.guarantee | quote }}
+            - name: BOOTH_NOTEBOOKS_CPU_LIMIT
+              value: {{ .Values.singleuser.cpu.limit | quote }}
+            - name: BOOTH_NOTEBOOKS_MEM_GUARANTEE
+              value: {{ .Values.singleuser.memory.guarantee | quote }}
+            - name: BOOTH_NOTEBOOKS_MEM_LIMIT
+              value: {{ .Values.singleuser.memory.limit | quote }}
+            - name: BOOTH_NOTEBOOKS_START_TIMEOUT
+              value: {{ .Values.singleuser.startTimeoutSeconds | quote }}
+            - name: BOOTH_NOTEBOOKS_STORAGE_ENABLED
+              value: {{ .Values.singleuser.storage.enabled | quote }}
+            - name: BOOTH_NOTEBOOKS_STORAGE_CAPACITY
+              value: {{ .Values.singleuser.storage.capacity | quote }}
+            {{- with .Values.singleuser.storage.storageClass }}
+            - name: BOOTH_NOTEBOOKS_STORAGE_CLASS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.singleuser.profiles }}
+            - name: BOOTH_NOTEBOOKS_PROFILES
+              value: {{ toJson . | quote }}
+            {{- end }}
+            - name: BOOTH_NOTEBOOKS_FRAME_ANCESTORS
+              value: {{ .Values.singleuser.frameAncestors | quote }}
+            - name: BOOTH_NOTEBOOKS_CULL_IDLE_SECONDS
+              value: {{ .Values.hub.cullIdleSeconds | quote }}
+            - name: BOOTH_NOTEBOOKS_SESSION_SECONDS
+              value: {{ .Values.hub.sessionSeconds | quote }}
+          # Readiness (and what core polls, via the proxy) checks the hub database; liveness does not,
+          # since restarting the hub cannot fix a Postgres outage.
+          readinessProbe:
+            httpGet: {path: /hub/booth/healthz, port: hub}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /hub/health, port: hub}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.hub.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.workloadIdentity.enabled }}
+            # The credential core minted for this module (ADR 0056/0058). Mounted here and nowhere else.
+            - name: workload-minting
+              mountPath: /etc/booth/workload
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.workloadIdentity.enabled }}
+        - name: workload-minting
+          secret:
+            # Not optional: if booth-core has not written it yet the hub waits, loudly, rather than
+            # starting with kernels silently unable to reach the platform.
+            secretName: booth-workload-minting-credentials
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "booth-notebooks.fullname" . }}-hub
+  labels:
+    {{- include "booth-notebooks.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "booth-notebooks.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: hub
+  ports:
+    - name: hub
+      port: 8081
+      targetPort: hub

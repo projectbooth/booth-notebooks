@@ -1,0 +1,51 @@
+# The hub is the only component that talks to the Kubernetes API: KubeSpawner creates and deletes
+# notebook pods and their home volumes. Namespace-scoped, least privilege — no secrets (internal_ssl
+# is off), no services (pods are reached directly), nothing cluster-wide. Notebook pods themselves
+# get NO service account token at all (hubconfig.py; spawner.check_pod refuses otherwise).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "booth-notebooks.fullname" . }}-hub
+  labels:
+    {{- include "booth-notebooks.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "booth-notebooks.fullname" . }}-hub
+  labels:
+    {{- include "booth-notebooks.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, watch, create]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "booth-notebooks.fullname" . }}-hub
+  labels:
+    {{- include "booth-notebooks.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "booth-notebooks.fullname" . }}-hub
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "booth-notebooks.fullname" . }}-hub
+---
+# The proxy and the notebook pods need no Kubernetes identity at all.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "booth-notebooks.fullname" . }}-proxy
+  labels:
+    {{- include "booth-notebooks.labels" . | nindent 4 }}
+automountServiceAccountToken: false

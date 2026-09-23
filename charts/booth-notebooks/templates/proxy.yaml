@@ -1,0 +1,87 @@
+# configurable-http-proxy: routes /hub/* to the hub and /user/<name>/* to that user's notebook pod,
+# using routes the hub maintains over the API port. Its own Deployment (not a hub subprocess) so a hub
+# restart or upgrade never drops open notebooks.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "booth-notebooks.fullname" . }}-proxy
+  labels:
+    {{- include "booth-notebooks.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  replicas: 1  # the routing table lives in memory; the hub re-syncs it on restart
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "booth-notebooks.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: proxy
+  template:
+    metadata:
+      labels:
+        {{- include "booth-notebooks.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: proxy
+    spec:
+      serviceAccountName: {{ include "booth-notebooks.fullname" . }}-proxy
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: proxy
+          image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}"
+          imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+          command:
+            - configurable-http-proxy
+            - --ip=
+            - --port=8000
+            - --api-ip=
+            - --api-port=8001
+            - --default-target={{ include "booth-notebooks.hubUrl" . }}
+            - --error-target={{ include "booth-notebooks.hubUrl" . }}/hub/error
+          env:
+            - name: CONFIGPROXY_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ include "booth-notebooks.hubSecretName" . }}, key: proxy-token}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - {name: http, containerPort: 8000}
+            - {name: api, containerPort: 8001}
+          readinessProbe:
+            tcpSocket: {port: http}
+          livenessProbe:
+            tcpSocket: {port: http}
+            initialDelaySeconds: 10
+          resources:
+            {{- toYaml .Values.proxy.resources | nindent 12 }}
+---
+# What booth-core's gateway fronts (the BoothModule's serviceRef).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "booth-notebooks.fullname" . }}-proxy-public
+  labels:
+    {{- include "booth-notebooks.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "booth-notebooks.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+  ports:
+    - {name: http, port: 8000, targetPort: http}
+---
+# Route management, for the hub only (NetworkPolicy + the shared proxy token).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "booth-notebooks.fullname" . }}-proxy-api
+  labels:
+    {{- include "booth-notebooks.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "booth-notebooks.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+  ports:
+    - {name: api, port: 8001, targetPort: api}

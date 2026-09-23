@@ -1,0 +1,136 @@
+{{- /*
+Network boundaries (ADR 0057). Notebook pods run user code, so their policy is an allowlist in BOTH
+directions: in, only from the proxy and the hub; out, only DNS, the hub API (for platform tokens), and
+booth-core's gateway — never the hub's database, never another user's pod — plus optional public
+internet that excludes private ranges and the cloud metadata endpoint.
+
+The proxy only admits booth-core (and the hub on the API port): that is what makes "every browser
+request carries core's identity assertion" true rather than hoped for. Requires a CNI that enforces
+NetworkPolicy; on one that doesn't (e.g. kind's default kindnet) these are silently inert.
+*/ -}}
+{{- $sel := include "booth-notebooks.selectorLabels" . }}
+{{- if .Values.singleuser.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "booth-notebooks.fullname" . }}-singleuser
+  labels:
+    {{- include "booth-notebooks.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "booth-notebooks.singleuserSelector" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # The proxy (users' traffic) and the hub (spawn/health checks). Not other notebook pods.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- $sel | nindent 14 }}
+              app.kubernetes.io/component: proxy
+        - podSelector:
+            matchLabels:
+              {{- $sel | nindent 14 }}
+              app.kubernetes.io/component: hub
+      ports:
+        - {protocol: TCP, port: 8888}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.singleuser.networkPolicy.egress.dns.namespaceSelector | nindent 14 }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.singleuser.networkPolicy.egress.dns.podSelector | nindent 14 }}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    # The hub API: activity reports, the single-user OAuth check, and platform tokens.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- $sel | nindent 14 }}
+              app.kubernetes.io/component: hub
+      ports:
+        - {protocol: TCP, port: 8081}
+    {{- if .Values.core.url }}
+    # booth-core's gateway, where booth.storage / booth.catalog calls go (ADR 0059).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.core.namespaceSelector | nindent 14 }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.core.podSelector | nindent 14 }}
+    {{- end }}
+    {{- with .Values.singleuser.networkPolicy.egress.extra }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.singleuser.networkPolicy.egress.allowInternet }}
+    # Public internet only: never cluster/private ranges (so not the database) or link-local (metadata).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10]
+    {{- end }}
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "booth-notebooks.fullname" . }}-proxy
+  labels:
+    {{- include "booth-notebooks.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- $sel | nindent 6 }}
+      app.kubernetes.io/component: proxy
+  policyTypes: [Ingress]
+  ingress:
+    # User traffic: only from booth-core (its gateway / iframe proxy and its health checks).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.core.namespaceSelector | nindent 14 }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.core.podSelector | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: 8000}
+    # Route management: only the hub.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- $sel | nindent 14 }}
+              app.kubernetes.io/component: hub
+      ports:
+        - {protocol: TCP, port: 8001}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "booth-notebooks.fullname" . }}-hub
+  labels:
+    {{- include "booth-notebooks.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- $sel | nindent 6 }}
+      app.kubernetes.io/component: hub
+  policyTypes: [Ingress]
+  ingress:
+    # The proxy (browser traffic to /hub/) and notebook pods (the hub API). The platform-token endpoint
+    # authenticates each pod by its own per-user API token, so reaching the port is not enough.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- $sel | nindent 14 }}
+              app.kubernetes.io/component: proxy
+        - podSelector:
+            matchLabels:
+              {{- include "booth-notebooks.singleuserSelector" . | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: 8081}
+{{- end }}

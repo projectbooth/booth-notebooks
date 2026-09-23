@@ -1,0 +1,45 @@
+# Registers booth-notebooks with booth-core's module registry (ADR 0019): the BoothModule CRD is the
+# only thing core reads to know this module exists (contracts/module-manifest.md). Uses booth-core's
+# own CRD type, installed by that chart — not redefined here.
+#
+# iframe-proxy (ADR 0005, ui-integration.md): the UI is JupyterHub/JupyterLab's own. core's gateway
+# fronts the proxy Service below; JupyterHub runs at base URL "/" so its root-relative /hub/... and
+# /user/... calls resolve via core's cookie-keyed iframe fallback route.
+apiVersion: booth.projectbooth.io/v1alpha1
+kind: BoothModule
+metadata:
+  name: notebooks
+  labels:
+    {{- include "booth-notebooks.labels" . | nindent 4 }}
+spec:
+  id: notebooks
+  displayName: Notebooks
+  icon: notebook
+  version: {{ .Chart.AppVersion | quote }}
+  contractVersion: "0.1.0"
+  hasOwnUi: true
+  uiIntegrationMode: iframe-proxy
+  navGroup: build
+  navPath: /notebooks
+  # Through the proxy, so a dead proxy or a dead hub both show as unhealthy; checks the hub database.
+  healthCheckPath: /hub/booth/healthz
+  # What kernels call on the user's behalf (with their own role, never more).
+  requiredScopes:
+    - storage.read
+    - storage.write
+    - catalog.read
+    - catalog.write
+  # Hub state: users, running servers, API tokens (ADR 0053). Omitting this provisions nothing.
+  database:
+    enabled: true
+  {{- if .Values.workloadIdentity.enabled }}
+  # ADR 0056: kernels call booth-storage/booth-catalog with no human token present, so core
+  # provisions a minting credential (Secret booth-workload-minting-credentials). It is mounted ONLY
+  # into the hub, which never runs user code; notebook pods get single, short-lived tokens (ADR 0057).
+  workloadIdentity:
+    mint: true
+  {{- end }}
+  # No `events` on purpose (ADR 0050): v0 neither publishes nor subscribes, so it gets no bus credential.
+  serviceRef:
+    name: {{ include "booth-notebooks.fullname" . }}-proxy-public
+    port: 8000

@@ -1,0 +1,35 @@
+name: Integration
+
+# Layer 3 (contracts/testing-strategy.md, ADR 0024): the chart on a real kind cluster, spawning and
+# tearing down real KubeSpawner notebook pods. On merge to main and nightly, not on every push/PR.
+# Same script developers run locally (hack/kind-integration.sh); see tests/integration/test_kind.py
+# for exactly what it covers and what it does not (booth-core itself, NetworkPolicy enforcement).
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 8 * * *" # nightly
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  kind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: azure/setup-helm@v4
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: booth-notebooks-it
+      - name: Install test dependencies
+        run: pip install -e ".[dev]" -e client
+      - name: Build, load, deploy, spawn, tear down
+        env:
+          BOOTH_KIND_CLUSTER: booth-notebooks-it
+        run: sh hack/kind-integration.sh

@@ -1,0 +1,124 @@
+# Default values for booth-notebooks.
+
+identity:
+  # Who may log in to the hub (booth_notebooks/identity.py). The hub verifies a signed identity on
+  # EVERY browser request itself (core-platform-api.md "Auth enforcement", ADR 0041) and never trusts
+  # the gateway's forwarded headers alone. At least one of `issuerUrl` / `oidc.issuerUrl` is required.
+  #
+  # issuerUrl: booth-core's iframe-identity issuer (ADR 0069): core signs an X-Booth-Identity assertion
+  # on every iframe-proxied request. It must equal core's BOOTH_IFRAME_IDENTITY_ISSUER_URL EXACTLY —
+  # it is compared with the token's `iss` and the discovery document's `issuer`, so `...svc:8080` vs
+  # `...svc.cluster.local:8080` is a mismatch and every login is refused. The default is booth-core
+  # chart's own default for a release named booth-core in booth-system. Audience = the module id.
+  issuerUrl: "http://booth-core.booth-system.svc.cluster.local:8080/iframe-identity"
+  audience: notebooks
+  # The request header carrying that assertion. Deliberately not `Authorization`, which JupyterHub
+  # and jupyter-server both treat as their own API token.
+  header: X-Booth-Identity
+  # Workspace roles allowed to open notebooks. A notebook runs with the person's own role (a viewer's
+  # kernel can read but not write storage/catalog), so viewers are allowed by default.
+  allowedRoles: [owner, editor, viewer]
+
+oidc:
+  # The deployment's IdP, verified exactly as every other module does. Optional here: needed only if
+  # the proxy in front of this module forwards the user's own token instead of a core assertion.
+  issuerUrl: ""
+  clientId: ""
+  requireAudience: true
+  # Must match booth-core's BOOTH_OIDC_GROUPS_CLAIM (ADR 0025), or every login is refused.
+  groupsClaim: groups
+
+core:
+  # booth-core's in-cluster base URL. Kernels reach booth-storage/booth-catalog through its gateway
+  # (<url>/modules/..., ADR 0007/0059). Empty = notebooks work, with no platform access (ADR 0006).
+  url: http://booth-core.booth-system.svc:8080
+  # Where core's pods run: the only callers the proxy accepts, and the only platform destination a
+  # notebook pod may reach. Match your install.
+  namespaceSelector: {kubernetes.io/metadata.name: booth-system}
+  podSelector: {app.kubernetes.io/name: booth-core}
+
+# Hub state (users, servers, API tokens) lives in this module's database on the shared PostgreSQL
+# (ADR 0014); core provisions it because the BoothModule declares `database: {enabled: true}` (ADR 0053).
+database:
+  credentialsSecret:
+    name: booth-database-credentials
+    key: dsn
+
+# ADR 0056/0058: kernels call booth-storage/booth-catalog with a short-lived token core mints for their
+# notebook server. The minting credential is mounted into the hub ONLY — never a notebook pod (ADR 0057).
+workloadIdentity:
+  enabled: true
+
+hub:
+  image:
+    repository: ghcr.io/projectbooth/booth-notebooks-hub
+    tag: "" # defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+  resources: {}
+  secret:
+    # Empty = the chart generates one (crypt key, cookie secret, proxy token) and keeps it across
+    # upgrades. Or name a Secret you manage with keys crypt-key, cookie-secret, proxy-token.
+    name: ""
+  # Stop servers idle this long (and delete their pods). 0 disables culling.
+  cullIdleSeconds: 3600
+  # How long an open notebook tab outlives a lost membership before it must re-check with the hub.
+  sessionSeconds: 900
+
+proxy:
+  image:
+    repository: quay.io/jupyterhub/configurable-http-proxy
+    tag: "4.6.3"
+    pullPolicy: IfNotPresent
+  resources: {}
+
+singleuser:
+  # The documented default kernel: images/singleuser (Python 3.12, pandas/pyarrow/duckdb/matplotlib,
+  # the `booth` client). docs/decisions/0001 for why v0 ships Python only.
+  image:
+    repository: ghcr.io/projectbooth/booth-notebooks-singleuser
+    tag: "" # defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+  cpu: {guarantee: 0.1, limit: 2}
+  memory: {guarantee: 512M, limit: 2G}
+  startTimeoutSeconds: 300
+  storage:
+    # One volume per (person, workspace). Kept when a server stops AND when this chart is uninstalled
+    # (the hub creates them, not Helm) — see README "Data lifecycle".
+    enabled: true
+    capacity: 10Gi
+    storageClass: ""
+  # Optional extra environments (a KubeSpawner profile_list), e.g. an operator-built R image. Empty =
+  # the one default image, no chooser page. Each image must include jupyterhub-singleuser 5.x.
+  profiles: []
+  # Allowed framing origins for the notebook UI (CSP frame-ancestors). "'self'" works only when the
+  # shell and core's iframe URL share an origin; otherwise list the shell's origin.
+  frameAncestors: "'self'"
+  networkPolicy:
+    enabled: true
+    egress:
+      dns:
+        namespaceSelector: {kubernetes.io/metadata.name: kube-system}
+        podSelector: {k8s-app: kube-dns}
+      # Kernels may reach the public internet (pip install, public datasets) but never private ranges
+      # or the cloud metadata endpoint. Turn off for an air-gapped posture.
+      allowInternet: true
+      # Raw NetworkPolicy egress rules, appended.
+      extra: []
+
+networkPolicy:
+  # Hub and proxy ingress policies (the notebook pods' own is under singleuser.networkPolicy).
+  # Requires a CNI that enforces NetworkPolicy; on one that doesn't, these are silently inert.
+  enabled: true
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]

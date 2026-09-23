@@ -1,0 +1,39 @@
+# A throwaway PostgreSQL for the integration test cluster, standing in for the shared platform
+# database (ADR 0014) on which booth-core would provision this module's database/role (ADR 0053).
+# Test fixture only: fixed credentials, no persistence. The credentials Secret is created by the
+# workflow, exactly as core would deliver it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - {name: POSTGRES_USER, value: booth}
+            - {name: POSTGRES_PASSWORD, value: booth-test}
+            - {name: POSTGRES_DB, value: booth_notebooks}
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "booth", "-d", "booth_notebooks"]
+            initialDelaySeconds: 3
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: {app: postgres}
+  ports:
+    - port: 5432

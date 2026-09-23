@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "booth-notebooks"
+version = "0.1.0"
+description = "Project Booth's notebooks module: JupyterHub + KubeSpawner with per-user, per-workspace isolated notebook pods (ADR 0011). This package is the hub side: authentication, spawner hardening, and workload-identity minting."
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "jupyterhub>=5.2,<6",
+  "jupyterhub-kubespawner>=7,<8",
+  "jupyterhub-idle-culler>=1.4",
+  "pyjwt[crypto]>=2.9",
+  "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# The hub image installs this for the core-provisioned database (ADR 0053). Kept optional so unit
+# tests don't need a Postgres driver.
+postgres = ["psycopg2-binary>=2.9"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "pyyaml>=6", "pandas>=2.2", "websocket-client>=1.8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 110
+src = ["src", "tests", "client/src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]

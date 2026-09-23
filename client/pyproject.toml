@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "booth-notebook-client"
+version = "0.1.0"
+description = "The `booth` package preinstalled in booth-notebooks' default kernel: registered datasets and storage from a notebook, as the notebook's own short-lived platform identity."
+requires-python = ">=3.10"
+# Standard library only, so it installs into any kernel image an operator builds (docs/decisions/0001).
+# pandas is used when present, never required.
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]

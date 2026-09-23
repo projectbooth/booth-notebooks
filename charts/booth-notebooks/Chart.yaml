@@ -1,0 +1,9 @@
+apiVersion: v2
+name: booth-notebooks
+description: >
+  Project Booth's notebooks module: JupyterHub with KubeSpawner, one isolated notebook pod per person
+  per workspace (ADR 0011), embedded in the shell via iframe-proxy (ADR 0005).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/projectbooth/booth-notebooks

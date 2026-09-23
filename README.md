@@ -1,0 +1,117 @@
+# booth-notebooks
+
+Project Booth's notebooks module (nav group **Build**): JupyterHub with KubeSpawner, running **one isolated
+notebook pod per person per workspace** (ADR 0011), embedded in the shell through core's iframe proxy
+(ADR 0005). Kernels read registered datasets and storage through `booth-catalog`/`booth-storage`, as a
+short-lived, role-capped platform identity (ADR 0056/0057). Nothing here needs Spark or any other module
+to be installed (ADR 0006).
+
+> **Status: works through the real shell.** With ADR 0069 shipped (core `cdd621e`, design `f8b6804`), a
+> user's notebook spawns and runs through the real booth-design shell and real booth-core. Verified end
+> to end on kind with Keycloak, including a kernel websocket and a core-minted platform token
+> ([docs/decisions/0004](docs/decisions/0004-adr-0069-adoption-and-real-stack-findings.md)). Known
+> cross-cutting issue: while an iframe session cookie exists, the shell's own page reloads are routed into
+> JupyterHub (a booth-design/core fix, described in 0004).
+
+## How it fits together
+
+```
+browser ──shell──▶ booth-core iframe proxy ──(X-Booth-Identity JWT, X-Booth-Workspace)──▶ proxy (CHP) ─┬─▶ hub
+                                                                                                        └─▶ notebook pod (/user/<name>/)
+notebook pod ──(its own JupyterHub API token)──▶ hub /hub/api/booth/platform-token ──(minting credential)──▶ booth-core
+notebook pod ──(Bearer <10-min workload token>, X-Workspace)──▶ booth-core gateway /modules/{storage,catalog}
+```
+
+| Component | Holds | Runs user code |
+|---|---|---|
+| **hub** (`images/hub`, `src/booth_notebooks`) | hub DB DSN (ADR 0053), workload-minting credential (ADR 0056), crypt key, cookie secret, K8s token for KubeSpawner | **never** |
+| **proxy** (configurable-http-proxy) | the route-API token only | no |
+| **notebook pod** (`images/singleuser`) | its own per-user JupyterHub API token only; no SA token, no module Secret | **yes** |
+
+- `identity.py`: verifies a JWT from a configured trusted issuer (OIDC discovery + JWKS), derives the
+  workspace role from its groups claim, rejects a forwarded role stronger than the token (ADR 0041), and
+  never lets a workload (`<kind>:<id>`) token log in as a person.
+- `authenticator.py`: auto-login from that identity, **re-verified on every browser request** to the hub.
+  A lost membership or a workspace switch takes effect immediately; a hub cookie alone is worth nothing.
+- `spawner.py`: KubeSpawner, plus a last check that refuses to create a pod that could read a module
+  credential, however it was configured.
+- `handlers.py` + `workload.py`: `/hub/booth/healthz` (the manifest's health path) and the kernel
+  platform-token endpoint.
+- `hubconfig.py`: the entire hub configuration as a function of the env the chart sets (unit-testable).
+- `client/` (the `booth` package in the default kernel):
+
+  ```python
+  import booth
+  booth.catalog.datasets(q="sales")
+  df = booth.read_dataset("daily-sales")        # by name or id -> pandas DataFrame (csv/tsv/parquet/json)
+  booth.storage.read("lake", "raw/file.csv")    # {backendId, path}, ADR 0045
+  booth.catalog.register_dataset("result", "lake", "out/result.parquet")
+  ```
+
+## The default kernel environment
+
+`images/singleuser`: Jupyter docker-stacks `base-notebook` (Python 3.12, JupyterLab 4.4, pinned by
+digest) + pandas, pyarrow, duckdb, matplotlib + `booth`. **Python only in v0.** See
+[docs/decisions/0001](docs/decisions/0001-default-kernel-python-only.md) for the investigation. Operators can
+add environments with `singleuser.profiles` (a KubeSpawner `profile_list`). Each image needs
+`jupyterhub-singleuser` 5.x and uid 1000/gid 100. Only the default image ships the `booth` client.
+
+## Installing
+
+Requires booth-core (BoothModule CRD, `booth-database-credentials`, `booth-workload-minting-credentials`).
+
+```sh
+helm install notebooks charts/booth-notebooks -n booth-notebooks \
+  --set core.url=http://booth-core.booth-system.svc:8080
+```
+
+`identity.issuerUrl` defaults to booth-core's iframe-identity issuer (ADR 0069), as rendered by core's chart
+for a release `booth-core` in `booth-system`. If your core release or namespace differs, set it to core's
+`BOOTH_IFRAME_IDENTITY_ISSUER_URL` **exactly**: core spells it `…svc.cluster.local:8080/iframe-identity`,
+and a `…svc:8080` spelling refuses every login.
+
+Key values: `identity.*`/`oidc.*` (who may log in), `singleuser.*` (image, resources, storage, profiles,
+framing origin, egress), `hub.cullIdleSeconds`, `hub.sessionSeconds`, `workloadIdentity.enabled`,
+`core.namespaceSelector`/`podSelector` (must match your core install: they gate proxy ingress and pod
+egress). NetworkPolicies need a CNI that enforces them.
+
+### Data lifecycle
+
+- Stopping a server (or the idle culler, default 1 h) deletes its **pod**. The home **volume**
+  (`claim-<hub user>`) is kept.
+- Uninstalling the chart deletes hub, proxy and policies. Running notebook pods and all home volumes
+  are **not** deleted (the hub created them, not Helm). To remove them:
+  `kubectl -n <ns> delete pod -l component=singleuser-server; kubectl -n <ns> delete pvc -l app.kubernetes.io/part-of=booth-notebooks`
+  (PVCs carry KubeSpawner's labels; check before deleting).
+- The hub's generated Secret is kept across upgrades and uninstalls (`helm.sh/resource-policy: keep`).
+  Rotating its crypt key invalidates stored identities: users just log in again.
+
+## Development
+
+```sh
+python -m venv .venv && . .venv/bin/activate      # .venv\Scripts\activate on Windows
+pip install -e ".[dev]" -e client
+ruff check src tests client
+pytest tests/unit tests/client tests/hub tests/contract   # layers 1-2; contract tests need `helm`
+# tests/realstack: against real booth-core + shell + Keycloak, see hack/real-stack-e2e.md
+sh hack/kind-integration.sh                                 # layer 3: needs docker + kind + kubectl + helm
+```
+
+| Suite | What it proves |
+|---|---|
+| `tests/unit` | identity/role decisions, authenticator login + refresh, minting wire contract, the pod KubeSpawner actually builds (real manifest code), hub config |
+| `tests/client` | the `booth` package against a fake hub + gateway |
+| `tests/hub` | a **real JupyterHub process** with this config (only spawner/proxy swapped): login, per-request re-verification, workspace switch, platform tokens, refusals |
+| `tests/contract` | the BoothModule manifest vs. module-manifest.md, the credential/RBAC/network topology, and that the chart's rendered env is a valid `hubconfig` |
+| `tests/realstack` | **real booth-core + booth-design shell + Keycloak**: iframe URL, core's signed assertion, spawn, a kernel websocket through the shell, a core-minted platform token (`hack/real-stack-e2e.md`) |
+| `tests/integration` | on kind, stand-in core: deploy, spawn a real pod, JupyterLab through the proxy, kernel → hub → mint → gateway, hub restart without losing servers, a second workspace's pod, teardown keeps the home volume |
+
+CI: `.github/workflows/ci.yml` (layers 1–2 plus image builds, every push/PR, required on `main` via branch
+protection), `.github/workflows/integration.yml` (layer 3, merge to `main` and nightly).
+
+## Decisions
+
+- [0001](docs/decisions/0001-default-kernel-python-only.md): Python-only default kernel, with an operator seam.
+- [0002](docs/decisions/0002-iframe-proxy-identity-gap.md): the iframe-proxy identity gap, resolved by ADR 0069.
+- [0003](docs/decisions/0003-first-pass-judgment-calls.md): how ADR 0056/0057 were adopted, plus judgment calls for ratification.
+- [0004](docs/decisions/0004-adr-0069-adoption-and-real-stack-findings.md): ADR 0069 adoption, real-stack verification, **two new findings**.
