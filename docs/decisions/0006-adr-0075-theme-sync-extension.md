@@ -1,7 +1,7 @@
 # 0006: The ADR 0075 theme-sync JupyterLab extension — how it's built and what was verified
 
-Status: **built and verified in a real JupyterLab** (2026-09-28). Not yet exercised against booth-design's
-side of the protocol, which is being built independently (ADR 0075: either can land first).
+Status: **built, and verified end to end in a real browser through the real shell** (2026-09-28): real
+booth-core `fa11da0`, booth-design `d83c2a7` (its ADR 0075 side), Keycloak, on kind, in Chrome.
 
 ## What was built (`images/singleuser/theme-sync/`)
 
@@ -55,12 +55,20 @@ fails if the extension doesn't come out installed and enabled.
     ignored.
   - The parent sent `light`: back to **JupyterLab Light**, persisted.
 
-## Not verified yet
+## Verified end to end in a real browser (2026-09-28)
 
-The round trip with booth-design's real `IframeProxyPane.tsx` listener/sender, which doesn't exist yet on
-this machine's checkout. Once it lands, one real-stack browser pass should confirm the shell's reply
-arrives and a live toggle re-themes an open notebook. The embedded-side behaviour it depends on is
-verified above.
+In Chrome, signed in to the real shell as a real Keycloak user, with booth-design's own `IframeProxyPane`
+on the other side of the protocol:
+
+- **Initial handshake:** opening Notebooks with the shell in dark mode produced **JupyterLab Dark**
+  (JupyterLab's default is light, so this was the extension acting on the shell's reply). The pane's
+  iframe URL is relative (`/iframe/notebooks/...`) and JupyterLab rendered framed inside the shell.
+- **Live re-theme of an already-open notebook** (the case the ADR exists for). A notebook was open with a
+  kernel, and a marker was planted in the notebook page's JS state. Clicking the shell's toggle switched
+  JupyterLab to **Light**, then back to **Dark**. Each time the notebook stayed open and **the marker
+  survived, so there was no reload**. JupyterLab shows its own splash for a second or two while it swaps
+  theme stylesheets; it cleared every time.
+- Everything read from the live DOM (`data-jp-theme-name`, the shell's `data-theme`), not from screenshots.
 
 ## Judgment calls
 
