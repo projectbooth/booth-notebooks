@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "module": "commonjs", "declaration": false, "outDir": "test-build" },
+  "include": ["src/protocol.ts"]
+}

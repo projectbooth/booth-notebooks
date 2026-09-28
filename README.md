@@ -51,7 +51,9 @@ notebook pod ──(Bearer <10-min workload token>, X-Workspace)──▶ booth-
 ## The default kernel environment
 
 `images/singleuser`: Jupyter docker-stacks `base-notebook` (Python 3.12, JupyterLab 4.4, pinned by
-digest) + pandas, pyarrow, duckdb, matplotlib + `booth`. **Python only in v0.** See
+digest) + pandas, pyarrow, duckdb, matplotlib + `booth`, plus `@projectbooth/jupyterlab-theme-sync`, a
+small JupyterLab extension that follows the shell's dark/light toggle live over a same-origin
+`postMessage` handshake (ADR 0075, `images/singleuser/theme-sync/`). **Python only in v0.** See
 [docs/decisions/0001](docs/decisions/0001-default-kernel-python-only.md) for the investigation. Operators can
 add environments with `singleuser.profiles` (a KubeSpawner `profile_list`). Each image needs
 `jupyterhub-singleuser` 5.x and uid 1000/gid 100. Only the default image ships the `booth` client.
@@ -101,6 +103,7 @@ sh hack/kind-integration.sh                                 # layer 3: needs doc
 |---|---|
 | `tests/unit` | identity/role decisions, authenticator login + refresh, minting wire contract, the pod KubeSpawner actually builds (real manifest code), hub config |
 | `tests/client` | the `booth` package against a fake hub + gateway |
+| `images/singleuser/theme-sync` (`npm test`) | the ADR 0075 theme-sync handshake: same-origin/parent-only trust, payload validation, no-op when not embedded |
 | `tests/hub` | a **real JupyterHub process** with this config (only spawner/proxy swapped): login, per-request re-verification, workspace switch, platform tokens, refusals |
 | `tests/contract` | the BoothModule manifest vs. module-manifest.md, the credential/RBAC/network topology, and that the chart's rendered env is a valid `hubconfig` |
 | `tests/realstack` | **real booth-core + booth-design shell + Keycloak**: iframe URL, core's signed assertion, spawn, a kernel websocket through the shell, a core-minted platform token (`hack/real-stack-e2e.md`) |
@@ -115,4 +118,5 @@ protection), `.github/workflows/integration.yml` (layer 3, merge to `main` and n
 - [0002](docs/decisions/0002-iframe-proxy-identity-gap.md): the iframe-proxy identity gap, resolved by ADR 0069.
 - [0003](docs/decisions/0003-first-pass-judgment-calls.md): how ADR 0056/0057 were adopted, plus judgment calls for ratification.
 - [0004](docs/decisions/0004-adr-0069-adoption-and-real-stack-findings.md): ADR 0069 adoption, real-stack verification, two findings (both since fixed in core/design).
+- [0006](docs/decisions/0006-adr-0075-theme-sync-extension.md): the ADR 0075 theme-sync JupyterLab extension: build, verification, what's pending on booth-design.
 - [0005](docs/decisions/0005-third-pass-real-stack-verification.md): third pass: fixes verified, the notebook-session-lifetime bug fixed, a kernel reading real registered data.
