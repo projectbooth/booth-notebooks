@@ -1,8 +1,8 @@
 # 0005: Third pass — fixed iframe path verified, a session-lifetime bug fixed, real data access proven
 
 Status: **done on the real stack** (kind; real booth-core `fa11da0`, booth-design `526764e` including
-`af1fc39`, booth-storage `43542db`, booth-catalog `3d36f5d`, Keycloak), 2026-09-27. The real-browser
-check is recorded separately below.
+`af1fc39`, booth-storage `43542db`, booth-catalog `3d36f5d`, Keycloak), 2026-09-27. Real-browser checks
+done 2026-09-28 (section 6).
 
 ## 1. Both ADR 0069 follow-up fixes hold, from this module's side
 
@@ -65,3 +65,18 @@ post-renderer.
 `main` now requires CI's `python` and `images` jobs, strict (up to date), enforced for admins, mirroring
 booth-design, the only other protected booth repo. Direct pushes to `main` are therefore blocked, so
 changes land by PR.
+
+## 6. Real-browser checks (2026-09-28, Chrome, real shell + core + Keycloak)
+
+The checks `tests/realstack` can't make, done in Chrome against the real stack (booth-design `d83c2a7`):
+
+- **Framing:** JupyterLab renders inside the shell's content pane; the iframe URL is core's relative
+  `/iframe/notebooks/...`.
+- **Refresh with the iframe cookie live:** reloading `/notebooks` loaded **the shell** (title "Project
+  Booth", `#root`), not JupyterHub. The pane came back and re-ran the theme handshake. The
+  `Sec-Fetch-Dest` gate works in a real browser, not only with the test's simulated header.
+- **Downloads survive the gate:** a JupyterLab file download, triggered exactly as JupyterLab's Download
+  command does (an `<a download>` inside the pane), reached core and the module and returned **200**
+  with the notebook file, not the shell page. A download initiated inside the iframe isn't a top-level
+  document load, so the gate correctly lets it through.
+- Not separately observed: session renewal (ADR 0069 C) across its full 10-minute interval in the browser.
