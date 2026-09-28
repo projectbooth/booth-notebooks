@@ -9,9 +9,9 @@ to be installed (ADR 0006).
 > **Status: works through the real shell.** With ADR 0069 shipped (core `cdd621e`, design `f8b6804`), a
 > user's notebook spawns and runs through the real booth-design shell and real booth-core. Verified end
 > to end on kind with Keycloak, including a kernel websocket and a core-minted platform token
-> ([docs/decisions/0004](docs/decisions/0004-adr-0069-adoption-and-real-stack-findings.md)). Known
-> cross-cutting issue: while an iframe session cookie exists, the shell's own page reloads are routed into
-> JupyterHub (a booth-design/core fix, described in 0004).
+> ([docs/decisions/0004](docs/decisions/0004-adr-0069-adoption-and-real-stack-findings.md),
+> [0005](docs/decisions/0005-third-pass-real-stack-verification.md)). A kernel reads registered datasets from
+> real booth-catalog/booth-storage and registers its output, attributed to the notebook's run identity.
 
 ## How it fits together
 
@@ -114,4 +114,5 @@ protection), `.github/workflows/integration.yml` (layer 3, merge to `main` and n
 - [0001](docs/decisions/0001-default-kernel-python-only.md): Python-only default kernel, with an operator seam.
 - [0002](docs/decisions/0002-iframe-proxy-identity-gap.md): the iframe-proxy identity gap, resolved by ADR 0069.
 - [0003](docs/decisions/0003-first-pass-judgment-calls.md): how ADR 0056/0057 were adopted, plus judgment calls for ratification.
-- [0004](docs/decisions/0004-adr-0069-adoption-and-real-stack-findings.md): ADR 0069 adoption, real-stack verification, **two new findings**.
+- [0004](docs/decisions/0004-adr-0069-adoption-and-real-stack-findings.md): ADR 0069 adoption, real-stack verification, two findings (both since fixed in core/design).
+- [0005](docs/decisions/0005-third-pass-real-stack-verification.md): third pass: fixes verified, the notebook-session-lifetime bug fixed, a kernel reading real registered data.

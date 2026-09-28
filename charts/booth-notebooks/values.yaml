@@ -61,8 +61,13 @@ hub:
     name: ""
   # Stop servers idle this long (and delete their pods). 0 disables culling.
   cullIdleSeconds: 3600
-  # How long an open notebook tab outlives a lost membership before it must re-check with the hub.
-  sessionSeconds: 900
+  # Lifetime of the notebook server's own hub session (JupyterHub oauth_token_expires_in). NOT the
+  # membership bound: when it lapses, JupyterLab's API calls and websockets start failing with 403
+  # (measured on the real stack, docs/decisions/0005), so a short value breaks every long session. A lost
+  # membership is cut off a layer out instead — every request reaches the pod only via core's iframe
+  # session, which the shell renews every 10 min against the person's live token and membership and which
+  # lapses 15 min after the last successful renewal (ADR 0069 C). 1 day = the hub's own cookie lifetime.
+  sessionSeconds: 86400
 
 proxy:
   image:

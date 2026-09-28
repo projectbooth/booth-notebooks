@@ -31,7 +31,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 SHELL = os.environ.get("BOOTH_REAL_SHELL_URL", "").rstrip("/")
 pytestmark = pytest.mark.skipif(not SHELL, reason="set BOOTH_REAL_SHELL_URL (see hack/real-stack-e2e.md)")
 
-KEYCLOAK = os.environ.get("BOOTH_REAL_KEYCLOAK_URL", "http://127.0.0.1:18081")
+KEYCLOAK = os.environ.get("BOOTH_REAL_KEYCLOAK_URL", "http://127.0.0.1:8080")
 # Keycloak dev mode stamps `iss` from the Host header; it must be the issuer core trusts.
 KEYCLOAK_HOST = os.environ.get("BOOTH_REAL_KEYCLOAK_HOST", "keycloak.keycloak.svc:8080")
 USERNAME = os.environ.get("BOOTH_REAL_USERNAME", "owner-user")
@@ -53,7 +53,10 @@ def kubectl(*args: str) -> str:
 
 class Browser:
     """The parts of a browser this flow depends on: a path-scoped cookie jar that sends Secure cookies
-    to http://localhost (browsers treat localhost as a secure context), and same-origin redirects."""
+    to http://localhost (browsers treat localhost as a secure context), same-origin redirects, and the
+    ``Sec-Fetch-Dest`` header browsers attach to every request — which the shell and core now route on
+    (ADR 0069 implementation note): ``iframe`` for a navigation inside the notebooks pane, ``empty`` for
+    JupyterLab's own fetch/XHR calls, ``document`` for a top-level page load."""
 
     def __init__(self, origin: str) -> None:
         self.origin = origin
@@ -80,11 +83,11 @@ class Browser:
         matching = sorted(((len(p), n, v) for (n, p), v in self.jar.items() if path.startswith(p)), reverse=True)
         return "; ".join(f"{n}={v}" for _, n, v in matching)
 
-    def request(self, method: str, url: str, headers: dict | None = None, follow: bool = True, **kw) -> httpx.Response:
+    def request(self, method: str, url: str, headers: dict | None = None, follow: bool = True, dest: str = "empty", **kw) -> httpx.Response:
         url = urljoin(self.origin + "/", url)
         for _ in range(25):
             path = urlsplit(url).path
-            h = {**(headers or {}), "Cookie": self.cookie_header(path)}
+            h = {**(headers or {}), "Cookie": self.cookie_header(path), "Sec-Fetch-Dest": dest}
             r = self.http.request(method, url, headers=h, **kw)
             self._store(r)
             if not (follow and r.is_redirect):
@@ -150,7 +153,8 @@ def test_core_issues_an_iframe_url_on_the_shells_origin():
     r = httpx.get(f"{SHELL}/api/modules/notebooks/iframe-url", headers={"Authorization": f"Bearer {S.token}", "X-Workspace": WORKSPACE})
     assert r.status_code == 200, r.text
     url = r.json()["url"]
-    assert url.startswith(f"{SHELL}/iframe/notebooks/?booth_iframe_token="), url
+    # Relative since core fa11da0: the shell routes /iframe/ itself, so the URL works on any shell origin.
+    assert url.startswith("/iframe/notebooks/?booth_iframe_token="), url
     S.browser = Browser(SHELL)
     S.iframe_url = url
 
@@ -160,7 +164,7 @@ def test_core_issues_an_iframe_url_on_the_shells_origin():
 
 def test_the_iframe_navigation_logs_in_and_spawns_through_core():
     b = S.browser
-    r = b.request("GET", S.iframe_url)
+    r = b.request("GET", S.iframe_url, dest="iframe")
     assert b.cookie("booth_iframe_session", "/"), "core did not set its iframe session cookie"
     assert r.status_code == 200, (r.status_code, r.text[:300])
     who = b.request("GET", "/hub/api/user")
@@ -198,7 +202,7 @@ def test_the_pod_is_the_persons_isolated_pod_with_no_module_credentials():
 
 def test_jupyterlab_loads_through_the_shell():
     b = S.browser
-    r = b.request("GET", f"/user/{S.name}/lab")
+    r = b.request("GET", f"/user/{S.name}/lab", dest="iframe")
     assert r.status_code == 200 and "JupyterLab" in r.text, r.text[:300]
     specs = b.request("GET", f"/user/{S.name}/api/kernelspecs").json()["kernelspecs"]
     assert set(specs) == {"python3"}
@@ -286,18 +290,59 @@ def test_bypassing_core_with_a_self_signed_assertion_gets_nothing():
     assert r.status_code == 403
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="booth-design/core ADR 0069 item B follow-up: the cookie-keyed fallback also catches top-level "
-    "navigations, so with a live booth_iframe_session cookie every shell route (even /) is proxied into the "
-    "iframe module (JupyterHub redirects /storage -> /hub/storage). Found 2026-09-23 against the real stack; "
-    "see docs/decisions/0004. Strict: this starts failing (XPASS) once fixed, so remove the marker then.",
-)
-def test_shell_pages_still_load_while_an_iframe_session_exists():
-    """With the iframe cookie present, a reload of an ordinary shell route must still get the SPA,
-    not be proxied into the notebooks module (booth-design's nginx / core's fallback, ADR 0069 B)."""
-    r = S.browser.request("GET", "/storage", follow=False)
-    assert r.status_code == 200 and '<div id="root"' in r.text, (r.status_code, r.text[:200])
+@pytest.mark.parametrize("path", ["/", "/storage", "/notebooks", "/catalog/datasets"])
+def test_shell_pages_still_load_while_an_iframe_session_exists(path):
+    """A top-level page load (a refresh, a link opened in a new tab) with the iframe cookie live must get
+    the shell, not be proxied into the notebooks module. Was broken (docs/decisions/0004 finding 1);
+    fixed by core fa11da0 + design af1fc39 gating the cookie fallback on Sec-Fetch-Dest."""
+    r = S.browser.request("GET", path, follow=False, dest="document")
+    assert r.status_code == 200 and '<div id="root"' in r.text, (r.status_code, r.headers.get("location"), r.text[:200])
+
+
+def test_the_same_paths_inside_the_pane_still_reach_jupyterhub():
+    """The other half of the gate: a navigation inside the iframe (and JupyterLab's own calls) must keep
+    reaching the module — the fix must not have simply switched the fallback off."""
+    assert S.browser.request("GET", f"/user/{S.name}/lab", dest="iframe").status_code == 200
+    assert S.browser.request("GET", "/hub/api/user", dest="empty").json()["name"] == S.name
+
+
+@pytest.mark.skipif(os.environ.get("BOOTH_REAL_WITH_DATA") != "1", reason="needs real booth-storage + booth-catalog (hack/real-stack-data.sh)")
+def test_a_kernel_reads_a_registered_dataset_and_registers_its_output():
+    """The DoD's "access to registered storage/catalog entries", with every hop real: the person catalogs a
+    file through the shell; the kernel reads it by name via core's gateway with a core-minted workload token
+    (real booth-catalog + booth-storage verifying core as a second issuer), then writes and registers a
+    result — attributed to the notebook's run identity, never the person (ADR 0056)."""
+    run = uuid.uuid4().hex[:6]
+    gw = {"Authorization": f"Bearer {S.token}", "X-Workspace": WORKSPACE}
+    backend, src, out = f"nb-{run}", f"nb-sales-{run}", f"nb-total-{run}"
+    r = httpx.post(f"{SHELL}/modules/storage/api/admin/backends", headers=gw,
+                   json={"id": backend, "displayName": backend, "kind": "filesystem", "config": {"rootPath": f"/data/{WORKSPACE}"}})
+    assert r.status_code in (200, 201), r.text
+    r = httpx.put(f"{SHELL}/modules/storage/api/backends/{backend}/objects/sales.csv", headers=gw, content=b"day,amount\n1,10\n2,20\n")
+    assert r.status_code in (200, 201), r.text
+    r = httpx.post(f"{SHELL}/modules/catalog/api/datasets", headers=gw,
+                   json={"name": src, "description": "tests/realstack", "location": {"backendId": backend, "path": "sales.csv"}})
+    assert r.status_code in (200, 201), r.text
+
+    code = (
+        "import booth, json\n"
+        f"df = booth.read_dataset({src!r})\n"
+        "total = int(df['amount'].sum())\n"
+        f"booth.storage.write({backend!r}, 'out/total.csv', 'total\\n%d\\n' % total, 'text/csv')\n"
+        f"ds = booth.catalog.register_dataset({out!r}, {backend!r}, 'out/total.csv', description='written by a notebook')\n"
+        "print('RESULT ' + json.dumps({'type': type(df).__name__, 'total': total, 'id': ds['id']}))\n"
+    )
+    output = run_in_kernel(code)
+    line = next((ln for ln in output.splitlines() if ln.startswith("RESULT ")), None)
+    assert line, output
+    res = json.loads(line[len("RESULT "):])
+    assert res["type"] == "DataFrame" and res["total"] == 30
+
+    got = httpx.get(f"{SHELL}/modules/catalog/api/datasets/{res['id']}", headers=gw).json()
+    assert got["location"] == {"backendId": backend, "path": "out/total.csv"}
+    assert got["createdBy"] == f"notebook:{S.name}", got  # the run, not the person
+    body = httpx.get(f"{SHELL}/modules/storage/api/backends/{backend}/objects/out/total.csv", headers=gw)
+    assert body.status_code == 200 and body.text == "total\n30\n"
 
 
 def test_stopping_the_server_deletes_the_pod():
