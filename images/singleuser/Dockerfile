@@ -5,7 +5,20 @@
 #
 # Pinned by digest (tag python-3.12, verified 2026-09-22: jupyterhub 5.3.0, jupyterlab 4.4.5,
 # jupyter_server 2.16.0, Ubuntu 24.04, uid 1000 jovyan / gid 100). Bumping it is a deliberate change.
-FROM quay.io/jupyter/base-notebook:python-3.12@sha256:8370819f642e83d0ca9c7f26c6e60580a920a69af80607888723b1784f6b1232
+ARG BASE=quay.io/jupyter/base-notebook:python-3.12@sha256:8370819f642e83d0ca9c7f26c6e60580a920a69af80607888723b1784f6b1232
+
+# ---- Build stage: the ADR 0075 theme-sync JupyterLab extension ----------------------------------------
+# Built on the SAME base image as the runtime, so `jupyter labextension build` links the extension against
+# exactly the JupyterLab it will run in (federated extensions share JupyterLab's own packages at runtime; a
+# version mismatch breaks them). Node exists only in this stage, never in the notebook image.
+FROM ${BASE} AS theme-sync
+RUN mamba install --yes --quiet "nodejs=20" && mamba clean --all --force-pkgs-dirs --yes
+COPY --chown=1000:100 images/singleuser/theme-sync /tmp/theme-sync
+WORKDIR /tmp/theme-sync
+RUN npm ci --no-audit --no-fund && npm test && npm run build && jupyter labextension build .
+
+# ---- The notebook image --------------------------------------------------------------------------------
+FROM ${BASE}
 
 RUN pip install --no-cache-dir \
       "pandas>=2.2,<3" \
@@ -23,3 +36,7 @@ USER root
 COPY images/singleuser/booth_server_config.py /tmp/booth_server_config.py
 RUN cat /tmp/booth_server_config.py >> /etc/jupyter/jupyter_server_config.py && rm /tmp/booth_server_config.py
 USER 1000
+
+# ADR 0075: JupyterLab follows the shell's dark/light toggle live, over a same-origin postMessage handshake.
+# A prebuilt federated extension: JupyterLab discovers it from this directory, no rebuild of JupyterLab needed.
+COPY --from=theme-sync --chown=1000:100 /tmp/theme-sync/labextension /opt/conda/share/jupyter/labextensions/@projectbooth/jupyterlab-theme-sync

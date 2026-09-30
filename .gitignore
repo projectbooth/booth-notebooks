@@ -8,3 +8,4 @@ build/
 dist/
 .env
 *.local
+.real-stack/

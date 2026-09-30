@@ -8,3 +8,7 @@ tests
 docs
 hack
 charts
+images/singleuser/theme-sync/node_modules
+images/singleuser/theme-sync/lib
+images/singleuser/theme-sync/labextension
+images/singleuser/theme-sync/test-build
