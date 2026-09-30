@@ -43,13 +43,15 @@ database:
   credentialsSecret:
     name: booth-database-credentials
     key: dsn
-  # NOT the hub's database above: a workspace's booth-database module (ADR 0081), which kernels reach
-  # with `booth_database.connect()`. Set this (to anything non-empty, e.g. booth-database's in-cluster
-  # URL) once booth-database is installed in BUNDLED mode, and notebook pods get an egress rule to its
-  # Postgres (singleuser.networkPolicy.egress.database, ADR 0092) — mirroring core.url's gateway rule.
-  # Empty (the default, since booth-database is optional) renders no rule. The kernel learns the actual
-  # host from core's credential broker, not from this value; it only gates the rule. External-mode
-  # booth-database has no in-cluster pod to select: use singleuser.networkPolicy.egress.extra instead.
+
+# A workspace's booth-database module (ADR 0081) — NOT the hub's own database above, which notebook pods
+# must never reach. Set url (to anything non-empty, e.g. booth-database's in-cluster address) once
+# booth-database is installed in BUNDLED mode, and notebook pods get an egress rule to its Postgres
+# (singleuser.networkPolicy.egress.boothDatabase, ADR 0092, as amended) — mirroring core.url's gateway
+# rule. Empty (the default, since booth-database is optional) renders no rule. The kernel learns the
+# actual host from core's credential broker, not from this value; it only gates the rule. External-mode
+# booth-database has no in-cluster pod to select: use singleuser.networkPolicy.egress.extra instead.
+boothDatabase:
   url: ""
 
 # ADR 0056/0058: kernels call booth-storage/booth-catalog with a short-lived token core mints for their
@@ -112,9 +114,9 @@ singleuser:
       dns:
         namespaceSelector: {kubernetes.io/metadata.name: kube-system}
         podSelector: {k8s-app: kube-dns}
-      # booth-database's bundled Postgres (ADR 0092). Rendered only when database.url is set. Match your
-      # booth-database install's namespace.
-      database:
+      # booth-database's bundled Postgres (ADR 0092). Rendered only when boothDatabase.url is set. Match
+      # your booth-database install's namespace.
+      boothDatabase:
         namespaceSelector: {kubernetes.io/metadata.name: booth-database}
         podSelector: {app.kubernetes.io/name: booth-database, app.kubernetes.io/component: postgres}
       # Kernels may reach the public internet (pip install, public datasets) but never private ranges

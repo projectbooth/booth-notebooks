@@ -242,15 +242,15 @@ def _db_rules(np: dict) -> list[dict]:
             if any(t.get("podSelector", {}).get("matchLabels", {}).get("app.kubernetes.io/name") == "booth-database" for t in r.get("to", []))]
 
 
-def test_no_route_to_booth_database_unless_database_url_is_set(chart):
+def test_no_route_to_booth_database_unless_booth_database_url_is_set(chart):
     """ADR 0092: booth-database is optional, so by default notebook pods stay exactly as closed as before."""
     np = one(chart, "NetworkPolicy", f"{FULL}-singleuser")
     assert _db_rules(np) == []
     assert "5432" not in yaml.safe_dump(np["spec"]["egress"])
 
 
-def test_database_url_opens_exactly_booth_databases_bundled_postgres_on_5432():
-    items = docs("--set", f"database.url={DB_URL}")
+def test_booth_database_url_opens_exactly_booth_databases_bundled_postgres_on_5432():
+    items = docs("--set", f"boothDatabase.url={DB_URL}")
     np = one(items, "NetworkPolicy", f"{FULL}-singleuser")
     (rule,) = _db_rules(np)
     (dest,) = rule["to"]
@@ -266,16 +266,16 @@ def test_database_url_opens_exactly_booth_databases_bundled_postgres_on_5432():
 
 
 def test_the_database_rule_follows_the_configured_booth_database_install():
-    items = docs("--set", f"database.url={DB_URL}",
-                 "--set-json", 'singleuser.networkPolicy.egress.database.namespaceSelector={"kubernetes.io/metadata.name":"data"}')
+    items = docs("--set", f"boothDatabase.url={DB_URL}",
+                 "--set-json", 'singleuser.networkPolicy.egress.boothDatabase.namespaceSelector={"kubernetes.io/metadata.name":"data"}')
     (rule,) = _db_rules(one(items, "NetworkPolicy", f"{FULL}-singleuser"))
     assert rule["to"][0]["namespaceSelector"]["matchLabels"] == {"kubernetes.io/metadata.name": "data"}
 
 
-def test_database_url_only_touches_the_notebook_pod_policy():
+def test_booth_database_url_only_touches_the_notebook_pod_policy():
     """It gates a network rule and nothing else: the hub's own database wiring (ADR 0053) is unrelated
     and unchanged, and the kernel gets the real host from core's credential broker, not from this value."""
-    base, with_db = docs(), docs("--set", f"database.url={DB_URL}")
+    base, with_db = docs(), docs("--set", f"boothDatabase.url={DB_URL}")
     for kind, name in [("Deployment", f"{FULL}-hub"), ("Deployment", f"{FULL}-proxy"),
                        ("NetworkPolicy", f"{FULL}-hub"), ("NetworkPolicy", f"{FULL}-proxy")]:
         a, b = one(base, kind, name), one(with_db, kind, name)
@@ -284,6 +284,17 @@ def test_database_url_only_touches_the_notebook_pod_policy():
         assert a == b, f"{kind} {name} changed"
     assert env(one(with_db, "Deployment", f"{FULL}-hub"))["BOOTH_NOTEBOOKS_DATABASE_DSN"]["valueFrom"]["secretKeyRef"] == {
         "name": "booth-database-credentials", "key": "dsn"}
+
+
+def test_the_old_database_url_name_fails_loudly_instead_of_silently_rendering_no_rule():
+    """ADR 0092 was amended from database.url to boothDatabase.url. Setting the old name must not quietly do
+    nothing (leaving kernels cut off from their database) — nor be read as the hub's own database."""
+    out = helm("template", "x", str(CHART), *REQUIRED, "--set", f"database.url={DB_URL}")
+    assert out.returncode != 0 and "renamed to boothDatabase.url" in out.stderr
+
+
+def test_the_hubs_own_database_values_are_unaffected_by_the_rename(hub):
+    assert env(hub)["BOOTH_NOTEBOOKS_DATABASE_DSN"]["valueFrom"]["secretKeyRef"] == {"name": "booth-database-credentials", "key": "dsn"}
 
 
 def test_internet_egress_can_be_turned_off():
