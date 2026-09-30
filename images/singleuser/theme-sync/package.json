@@ -1,0 +1,30 @@
+{
+  "name": "@projectbooth/jupyterlab-theme-sync",
+  "version": "0.1.0",
+  "description": "JupyterLab follows the Project Booth shell's dark/light theme live (ADR 0075).",
+  "license": "UNLICENSED",
+  "private": true,
+  "files": [
+    "lib/**/*.js",
+    "lib/**/*.d.ts"
+  ],
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "build:labextension": "jupyter labextension build .",
+    "test": "tsc -p tsconfig.test.json && node --test test/protocol.test.cjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jupyterlab/application": "^4.4.0"
+  },
+  "devDependencies": {
+    "@jupyterlab/builder": "^4.4.0",
+    "typescript": "~5.5.4"
+  },
+  "jupyterlab": {
+    "extension": true,
+    "outputDir": "labextension"
+  }
+}

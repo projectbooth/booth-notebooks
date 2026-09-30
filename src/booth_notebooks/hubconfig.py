@@ -127,11 +127,13 @@ def configure(c, env: Mapping[str, str] | None = None) -> None:  # noqa: PLR0915
     # (start/stop/impersonate any user) has no workspace boundary.
     c.Authenticator.admin_users = set()
     c.JupyterHub.admin_access = False
-    # A single-user server's own OAuth session is checked against the hub only when it expires, so
-    # this bounds how long an open notebook tab outlives a lost membership. Matches core's iframe
-    # session lifetime (15 min).
-    c.JupyterHub.oauth_token_expires_in = _int(env, "BOOTH_NOTEBOOKS_SESSION_SECONDS", 900, 60)
+    # The notebook server's own hub session. When it lapses, JupyterLab's API calls and websockets 403
+    # (after up to 5 min of jupyter-server's token cache) and the open notebook breaks — measured on the
+    # real stack (docs/decisions/0005), so it must not be the per-tab membership bound. That bound is
+    # core's renewable iframe session (ADR 0069 C), which every request to the pod passes through and the
+    # shell re-verifies against the live token every 10 min. Default: the hub cookie's own lifetime.
     c.JupyterHub.cookie_max_age_days = 1
+    c.JupyterHub.oauth_token_expires_in = _int(env, "BOOTH_NOTEBOOKS_SESSION_SECONDS", 86400, 60)
     c.JupyterHub.default_url = "/hub/spawn"
     c.JupyterHub.allow_named_servers = False
 

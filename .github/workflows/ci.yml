@@ -34,6 +34,24 @@ jobs:
           BOOTH_TEST_REQUIRE_EMULATORS: "1"
         run: pytest tests/unit tests/client tests/hub tests/contract
 
+  theme-sync:
+    # The ADR 0075 JupyterLab extension (images/singleuser/theme-sync): typecheck + the postMessage handshake
+    # tests on Node. The image build below runs the same tests again inside its builder stage.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: images/singleuser/theme-sync
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: images/singleuser/theme-sync/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
   images:
     # Catches a broken Dockerfile on the PR that breaks it, and smoke-checks what each image must contain.
     runs-on: ubuntu-latest
@@ -47,6 +65,8 @@ jobs:
         run: docker run --rm booth-notebooks-hub:ci python -c "import booth_notebooks, kubespawner, jupyterhub_idle_culler, psycopg2"
       - name: The default kernel has the documented environment and the booth client
         run: docker run --rm booth-notebooks-singleuser:ci python -c "import booth, pandas, pyarrow, duckdb, matplotlib; import jupyterhub; assert jupyterhub.__version__.startswith('5.')"
+      - name: The theme-sync JupyterLab extension (ADR 0075) is installed and enabled
+        run: docker run --rm --entrypoint jupyter booth-notebooks-singleuser:ci labextension list 2>&1 | grep "@projectbooth/jupyterlab-theme-sync" | grep -q "OK"
       - name: The notebook server honours the shell's framing origin
         run: |
           docker run --rm -e BOOTH_FRAME_ANCESTORS=https://booth.example.com booth-notebooks-singleuser:ci python -c "
