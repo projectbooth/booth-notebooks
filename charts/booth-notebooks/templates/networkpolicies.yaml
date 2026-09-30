@@ -1,8 +1,9 @@
 {{- /*
 Network boundaries (ADR 0057). Notebook pods run user code, so their policy is an allowlist in BOTH
-directions: in, only from the proxy and the hub; out, only DNS, the hub API (for platform tokens), and
-booth-core's gateway — never the hub's database, never another user's pod — plus optional public
-internet that excludes private ranges and the cloud metadata endpoint.
+directions: in, only from the proxy and the hub; out, only DNS, the hub API (for platform tokens),
+booth-core's gateway and — opt-in via database.url — booth-database's bundled Postgres (ADR 0092);
+never the hub's own database, never another user's pod; plus optional public internet that excludes
+private ranges and the cloud metadata endpoint.
 
 The proxy only admits booth-core (and the hub on the API port): that is what makes "every browser
 request carries core's identity assertion" true rather than hoped for. Requires a CNI that enforces
@@ -62,6 +63,20 @@ spec:
           podSelector:
             matchLabels:
               {{- toYaml .Values.core.podSelector | nindent 14 }}
+    {{- end }}
+    {{- if .Values.database.url }}
+    # booth-database's bundled Postgres (ADR 0092), for `booth_database.connect()`. Opt-in via
+    # database.url, like core's rule above; booth-database admits this namespace on its side (core labels
+    # it database-client because this module declares `database`).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.singleuser.networkPolicy.egress.database.namespaceSelector | nindent 14 }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.singleuser.networkPolicy.egress.database.podSelector | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: 5432}
     {{- end }}
     {{- with .Values.singleuser.networkPolicy.egress.extra }}
     {{- toYaml . | nindent 4 }}

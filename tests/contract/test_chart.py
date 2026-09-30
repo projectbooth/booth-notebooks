@@ -234,6 +234,58 @@ def test_notebook_pod_egress_never_reaches_private_ranges_or_metadata(chart):
     assert "postgres" not in yaml.safe_dump(np).lower()
 
 
+DB_URL = "http://booth-database.booth-database.svc:8080"
+
+
+def _db_rules(np: dict) -> list[dict]:
+    return [r for r in np["spec"]["egress"]
+            if any(t.get("podSelector", {}).get("matchLabels", {}).get("app.kubernetes.io/name") == "booth-database" for t in r.get("to", []))]
+
+
+def test_no_route_to_booth_database_unless_database_url_is_set(chart):
+    """ADR 0092: booth-database is optional, so by default notebook pods stay exactly as closed as before."""
+    np = one(chart, "NetworkPolicy", f"{FULL}-singleuser")
+    assert _db_rules(np) == []
+    assert "5432" not in yaml.safe_dump(np["spec"]["egress"])
+
+
+def test_database_url_opens_exactly_booth_databases_bundled_postgres_on_5432():
+    items = docs("--set", f"database.url={DB_URL}")
+    np = one(items, "NetworkPolicy", f"{FULL}-singleuser")
+    (rule,) = _db_rules(np)
+    (dest,) = rule["to"]
+    assert dest["namespaceSelector"]["matchLabels"] == {"kubernetes.io/metadata.name": "booth-database"}
+    assert dest["podSelector"]["matchLabels"] == {"app.kubernetes.io/name": "booth-database", "app.kubernetes.io/component": "postgres"}
+    assert rule["ports"] == [{"protocol": "TCP", "port": 5432}]  # the database port only, not the pod wholesale
+    # One rule added; nothing else about the policy moves (still no private-range route via the internet rule).
+    default = one(docs(), "NetworkPolicy", f"{FULL}-singleuser")
+    assert len(np["spec"]["egress"]) == len(default["spec"]["egress"]) + 1
+    assert np["spec"]["ingress"] == default["spec"]["ingress"]
+    (blk,) = [t["ipBlock"] for r in np["spec"]["egress"] for t in r.get("to", []) if "ipBlock" in t]
+    assert {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"} <= set(blk["except"])
+
+
+def test_the_database_rule_follows_the_configured_booth_database_install():
+    items = docs("--set", f"database.url={DB_URL}",
+                 "--set-json", 'singleuser.networkPolicy.egress.database.namespaceSelector={"kubernetes.io/metadata.name":"data"}')
+    (rule,) = _db_rules(one(items, "NetworkPolicy", f"{FULL}-singleuser"))
+    assert rule["to"][0]["namespaceSelector"]["matchLabels"] == {"kubernetes.io/metadata.name": "data"}
+
+
+def test_database_url_only_touches_the_notebook_pod_policy():
+    """It gates a network rule and nothing else: the hub's own database wiring (ADR 0053) is unrelated
+    and unchanged, and the kernel gets the real host from core's credential broker, not from this value."""
+    base, with_db = docs(), docs("--set", f"database.url={DB_URL}")
+    for kind, name in [("Deployment", f"{FULL}-hub"), ("Deployment", f"{FULL}-proxy"),
+                       ("NetworkPolicy", f"{FULL}-hub"), ("NetworkPolicy", f"{FULL}-proxy")]:
+        a, b = one(base, kind, name), one(with_db, kind, name)
+        for d in (a, b):  # the hub's checksum/config annotation hashes all values, so it moves with any change
+            d.get("spec", {}).get("template", {}).get("metadata", {}).get("annotations", {}).pop("checksum/config", None)
+        assert a == b, f"{kind} {name} changed"
+    assert env(one(with_db, "Deployment", f"{FULL}-hub"))["BOOTH_NOTEBOOKS_DATABASE_DSN"]["valueFrom"]["secretKeyRef"] == {
+        "name": "booth-database-credentials", "key": "dsn"}
+
+
 def test_internet_egress_can_be_turned_off():
     np = one(docs("--set", "singleuser.networkPolicy.egress.allowInternet=false"), "NetworkPolicy", f"{FULL}-singleuser")
     assert "0.0.0.0/0" not in yaml.safe_dump(np)

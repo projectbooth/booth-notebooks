@@ -43,6 +43,14 @@ database:
   credentialsSecret:
     name: booth-database-credentials
     key: dsn
+  # NOT the hub's database above: a workspace's booth-database module (ADR 0081), which kernels reach
+  # with `booth_database.connect()`. Set this (to anything non-empty, e.g. booth-database's in-cluster
+  # URL) once booth-database is installed in BUNDLED mode, and notebook pods get an egress rule to its
+  # Postgres (singleuser.networkPolicy.egress.database, ADR 0092) — mirroring core.url's gateway rule.
+  # Empty (the default, since booth-database is optional) renders no rule. The kernel learns the actual
+  # host from core's credential broker, not from this value; it only gates the rule. External-mode
+  # booth-database has no in-cluster pod to select: use singleuser.networkPolicy.egress.extra instead.
+  url: ""
 
 # ADR 0056/0058: kernels call booth-storage/booth-catalog with a short-lived token core mints for their
 # notebook server. The minting credential is mounted into the hub ONLY — never a notebook pod (ADR 0057).
@@ -99,6 +107,11 @@ singleuser:
       dns:
         namespaceSelector: {kubernetes.io/metadata.name: kube-system}
         podSelector: {k8s-app: kube-dns}
+      # booth-database's bundled Postgres (ADR 0092). Rendered only when database.url is set. Match your
+      # booth-database install's namespace.
+      database:
+        namespaceSelector: {kubernetes.io/metadata.name: booth-database}
+        podSelector: {app.kubernetes.io/name: booth-database, app.kubernetes.io/component: postgres}
       # Kernels may reach the public internet (pip install, public datasets) but never private ranges
       # or the cloud metadata endpoint. Turn off for an air-gapped posture.
       allowInternet: true
