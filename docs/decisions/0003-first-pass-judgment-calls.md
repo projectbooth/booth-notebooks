@@ -59,8 +59,11 @@ should be ratified explicitly.
   namespace. Standard KubeSpawner behaviour. It's scoped to that one user's server, and via our endpoint
   worth at most that user's own role-capped 10-minute platform token.
 - **The NetworkPolicies are the real boundary** for "the proxy only admits core" and "pods can't reach
-  the database". They're silently inert on a CNI that doesn't enforce NetworkPolicy, including kind's
-  default, so layer 3 can't prove them.
+  the database". They're silently inert on a CNI that doesn't enforce NetworkPolicy.
+  **Correction (2026-09-30):** this originally said kind's default CNI was one of those, so layer 3 couldn't
+  prove them. That was wrong for current kind: its default CNI (kindnet, kind v0.30 / Kubernetes 1.34 here)
+  enforces NetworkPolicy. The ADR 0092 Integration step proves it by blocking a notebook pod's connection to
+  the hub's own database and to booth-database until opted in (`tests/integration/test_kind.py`).
 - **A notebook pod's resources aren't per-workspace quota'd**: each pod has limits, but nothing caps a
   workspace's total. A per-namespace ResourceQuota covers the whole module, not one tenant.
 - **Nothing here has run against a real booth-core.** Core's identity assertion doesn't exist yet (0002).

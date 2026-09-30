@@ -1,0 +1,40 @@
+# Copied from booth-pipeline's tests/integration/fixtures/ (eb67c2b), unchanged below this line: the same stand-in
+# both modules' ADR 0092 Integration steps probe.
+# A stand-in for booth-database's bundled Postgres (ADR 0081), for ADR 0092's egress rule: the same
+# pod labels booth-database's own chart puts on it (app.kubernetes.io/name: booth-database,
+# app.kubernetes.io/component: postgres) and the same port, in its own namespace. Test fixture only:
+# fixed credentials, no persistence, and none of booth-database's own logic.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: booth-database-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: booth-database, app.kubernetes.io/component: postgres}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: booth-database, app.kubernetes.io/component: postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - {name: POSTGRES_USER, value: booth}
+            - {name: POSTGRES_PASSWORD, value: booth-test}
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "booth"]
+            initialDelaySeconds: 3
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: booth-database-postgres
+spec:
+  selector: {app.kubernetes.io/name: booth-database, app.kubernetes.io/component: postgres}
+  ports:
+    - port: 5432

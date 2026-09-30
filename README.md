@@ -77,8 +77,8 @@ and a `…svc:8080` spelling refuses every login.
 Key values: `identity.*`/`oidc.*` (who may log in), `singleuser.*` (image, resources, storage, profiles,
 framing origin, egress), `hub.cullIdleSeconds`, `hub.sessionSeconds`, `workloadIdentity.enabled`,
 `core.namespaceSelector`/`podSelector` (must match your core install: they gate proxy ingress and pod
-egress), `database.url` (set once a bundled-mode booth-database is installed, to let notebook pods reach its
-Postgres on 5432; selectors under `singleuser.networkPolicy.egress.database`, ADR 0092; external-mode
+egress), `boothDatabase.url` (set once a bundled-mode booth-database is installed, to let notebook pods reach
+its Postgres on 5432; selectors under `singleuser.networkPolicy.egress.boothDatabase`, ADR 0092; external-mode
 booth-database goes in `egress.extra`). NetworkPolicies need a CNI that enforces them.
 
 ### Data lifecycle

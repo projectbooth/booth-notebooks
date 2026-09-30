@@ -10,7 +10,8 @@ Run by ``hack/kind-integration.sh`` (locally) and ``.github/workflows/integratio
 BOOTH_KIND_CLUSTER names a cluster with the images already loaded.
 
 What this does NOT prove: that booth-core itself reconciles the BoothModule, mints, or proxies iframes
-(booth-e2e's job), or NetworkPolicy enforcement (kind's default CNI ignores NetworkPolicy).
+(booth-e2e's job). NetworkPolicy IS enforced here — kind's default CNI (kindnet) enforces it — and the
+ADR 0092 step relies on that: its "blocked" assertions fail on a CNI that ignores policies.
 """
 
 from __future__ import annotations
@@ -264,6 +265,37 @@ def test_a_kernel_reaches_the_catalog_as_its_own_short_lived_identity(base):
     assert {"workspace": "acme", "subject": f"notebook:{ACME}", "roleCeiling": "editor", "owner": SUB} in rec["mints"]
     call = rec["gateway"][-1]
     assert call["auth"].startswith("Bearer wl-") and call["workspace"] == "acme"
+
+
+def test_booth_database_is_reachable_only_after_opting_in_and_the_hubs_own_database_never(base):
+    """ADR 0092 (as amended), tested as the CNI enforces it, not as the chart renders it: TCP connects from
+    INSIDE a live notebook pod, where user code runs. booth-database's Postgres (a stand-in with its real
+    labels) is blocked until boothDatabase.url is set and reachable after; the hub's own database is
+    blocked throughout. Controls show both addresses are valid, so "blocked" means the policy. Mirrors
+    booth-pipeline's step for its runner (eb67c2b)."""
+    kubectl("create", "namespace", "booth-database", check=False)
+    kubectl("apply", "-n", "booth-database", "-f", str(FIX / "booth-database-postgres.yaml"))
+    kubectl("-n", "booth-database", "rollout", "status", "deployment/booth-database-postgres", "--timeout=180s")
+    bdb = "booth-database-postgres.booth-database.svc.cluster.local"
+    own = f"postgres.{NS}.svc.cluster.local"  # the hub's own database (the stand-in for core's provisioned one)
+
+    def reaches(target: str, host: str) -> bool:
+        code = "import socket, sys; socket.create_connection((sys.argv[1], 5432), timeout=5)"
+        out = subprocess.run(["kubectl", "--context", f"kind-{CLUSTER}", "-n", NS, "exec", target, "--", "python", "-c", code, host],
+                             capture_output=True, text=True)
+        return out.returncode == 0
+
+    notebook = "pod/" + notebook_pod(ACME)["metadata"]["name"]
+    hub = "deploy/notebooks-booth-notebooks-hub"
+    # Controls: the hub legitimately uses its own database, and the booth-database address is live.
+    assert reaches(hub, own), "control failed: the hub cannot reach its own database"
+    assert not reaches(notebook, bdb), "booth-database was reachable from a notebook pod before opting in"
+    assert not reaches(notebook, own), "a notebook pod reached the hub's own database"
+
+    sh("helm", "--kube-context", f"kind-{CLUSTER}", "upgrade", "notebooks", str(ROOT / "charts" / "booth-notebooks"),
+       "--namespace", NS, "--reuse-values", "--set", f"boothDatabase.url={bdb}:5432", "--wait", "--timeout", "5m")
+    wait_for(lambda: reaches(notebook, bdb), 60, "booth-database to become reachable after setting boothDatabase.url")
+    assert not reaches(notebook, own), "after opting in, a notebook pod reached the hub's OWN database"
 
 
 def test_servers_survive_a_hub_restart(base, core):

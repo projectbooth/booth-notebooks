@@ -3,7 +3,8 @@ name: Integration
 # Layer 3 (contracts/testing-strategy.md, ADR 0024): the chart on a real kind cluster, spawning and
 # tearing down real KubeSpawner notebook pods. On merge to main and nightly, not on every push/PR.
 # Same script developers run locally (hack/kind-integration.sh); see tests/integration/test_kind.py
-# for exactly what it covers and what it does not (booth-core itself, NetworkPolicy enforcement).
+# for exactly what it covers and what it does not (booth-core itself). kind's default CNI enforces
+# NetworkPolicy, which the notebook-pod egress step (ADR 0092) relies on.
 on:
   push:
     branches: [main]
