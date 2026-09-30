@@ -39,9 +39,13 @@ def test_nobody_is_a_hub_admin():
     assert c.JupyterHub.admin_access is False
 
 
-def test_open_notebook_sessions_are_bounded():
-    assert cfg().JupyterHub.oauth_token_expires_in == 900
-    assert cfg(BOOTH_NOTEBOOKS_SESSION_SECONDS="120").JupyterHub.oauth_token_expires_in == 120
+def test_the_notebook_servers_hub_session_outlives_a_working_day():
+    """docs/decisions/0005: when this lapses JupyterLab 403s mid-session (measured on the real stack), so
+    it must never be short. The per-tab membership bound is core's renewable iframe session instead."""
+    c = cfg()
+    assert c.JupyterHub.oauth_token_expires_in == 86400
+    assert c.JupyterHub.oauth_token_expires_in >= c.JupyterHub.cookie_max_age_days * 86400
+    assert cfg(BOOTH_NOTEBOOKS_SESSION_SECONDS="120").JupyterHub.oauth_token_expires_in == 120  # still tunable
 
 
 def test_servers_survive_a_hub_restart():
