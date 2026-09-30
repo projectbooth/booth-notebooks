@@ -46,6 +46,8 @@ notebook pod ──(Bearer <10-min workload token>, X-Workspace)──▶ booth-
   df = booth.read_dataset("daily-sales")        # by name or id -> pandas DataFrame (csv/tsv/parquet/json)
   booth.storage.read("lake", "raw/file.csv")    # {backendId, path}, ADR 0045
   booth.catalog.register_dataset("result", "lake", "out/result.parquet")
+  booth.read_dataset("daily-orders")            # an Iceberg table (format: "iceberg", ADR 0085), via booth_lakehouse
+  booth.platform_token()                        # this notebook's platform token, for other clients (ADR 0084)
   ```
 
 ## The default kernel environment
@@ -118,5 +120,6 @@ protection), `.github/workflows/integration.yml` (layer 3, merge to `main` and n
 - [0002](docs/decisions/0002-iframe-proxy-identity-gap.md): the iframe-proxy identity gap, resolved by ADR 0069.
 - [0003](docs/decisions/0003-first-pass-judgment-calls.md): how ADR 0056/0057 were adopted, plus judgment calls for ratification.
 - [0004](docs/decisions/0004-adr-0069-adoption-and-real-stack-findings.md): ADR 0069 adoption, real-stack verification, two findings (both since fixed in core/design).
-- [0006](docs/decisions/0006-adr-0075-theme-sync-extension.md): the ADR 0075 theme-sync JupyterLab extension: build, verification, what's pending on booth-design.
 - [0005](docs/decisions/0005-third-pass-real-stack-verification.md): third pass: fixes verified, the notebook-session-lifetime bug fixed, a kernel reading real registered data.
+- [0006](docs/decisions/0006-adr-0075-theme-sync-extension.md): the ADR 0075 theme-sync JupyterLab extension: build, and end-to-end verification through the real shell.
+- [0007](docs/decisions/0007-lakehouse-client-support.md): `booth.platform_token()` and reading Iceberg datasets through `booth_lakehouse`.

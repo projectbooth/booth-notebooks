@@ -4,6 +4,7 @@
     booth.catalog.datasets(q="sales")          # what's registered in this workspace
     df = booth.read_dataset("daily-sales")     # a registered dataset, by name or id -> DataFrame
     booth.storage.read("lake", "raw/x.csv")    # raw bytes from a storage backend ({backendId, path})
+    booth.platform_token()                     # this notebook's current platform token, for other clients
 
 How identity works (ADR 0056/0057): the kernel never sees your browser's login. It asks the hub for
 a short-lived platform token (10 min, refreshed automatically), minted by booth-core for *this*
@@ -11,7 +12,9 @@ notebook server, in *this* workspace, capped at your current role — so a viewe
 but not write, and nothing here can reach another workspace. Every call goes through booth-core's
 gateway (ADR 0007/0059), exactly like the shell's own calls.
 
-Standard library only; pandas is used when installed and never required. Nothing here constructs a
+An Iceberg table registered in the catalog (``format: "iceberg"``, ADR 0085) is read through the
+``booth_lakehouse`` client, which must then be installed; everything else stays standard library only.
+pandas is used when installed and never required. Nothing here constructs a
 direct connection to a storage backend: a location is only ever resolved by booth-storage (ADR 0045).
 """
 
@@ -26,7 +29,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 
-__all__ = ["BoothError", "catalog", "storage", "read_dataset", "workspace", "Client"]
+__all__ = ["BoothError", "catalog", "storage", "read_dataset", "platform_token", "workspace", "Client"]
 __version__ = "0.1.0"
 
 
@@ -235,6 +238,7 @@ _READERS = {
 
 class Client:
     def __init__(self, env=None, opener=None) -> None:
+        self._env = os.environ if env is None else env
         self._http = _Http(env, opener)
         self.storage = Storage(self._http)
         self.catalog = Catalog(self._http)
@@ -243,11 +247,33 @@ class Client:
     def workspace(self) -> str:
         return self._http.workspace
 
+    def platform_token(self) -> str:
+        """This notebook's current platform token: a booth-core workload token for this notebook server,
+        in this workspace, capped at your role (ADR 0056). The public way for another client library
+        (e.g. ``booth_lakehouse``) to act as the notebook — pass ``booth.platform_token`` itself as a
+        token source, since it is short-lived: each call returns a still-valid token, fetched from the
+        hub only when the cached one is within a minute of expiring."""
+        h = self._http
+        if not (h._token_url and h._hub_token and h.workspace):
+            raise BoothError("this kernel isn't running in a Project Booth notebook server, so it has no platform identity")
+        return h.token()
+
     def read_dataset(self, ref: str, as_bytes: bool = False, **pandas_kwargs):
         """A registered dataset's contents: a pandas DataFrame for csv/tsv/parquet/json(l) when pandas
         is installed, otherwise (or with ``as_bytes=True``) the raw bytes. v0 reads one object; a
-        dataset registered at a directory raises, pointing at ``storage.list``."""
+        dataset registered at a directory raises, pointing at ``storage.list``.
+
+        An Iceberg table (``format: "iceberg"``, ADR 0085) is read through ``booth_lakehouse``
+        instead, as a DataFrame (a pyarrow Table without pandas); it takes ``columns=``, ``where=``
+        (a PyIceberg row filter such as ``"amount > 10"``) and ``snapshot_id=``."""
         ds = self.catalog.find(ref)
+        fmt = ds.get("format") or "file"  # absent on records from before ADR 0085: a file
+        if fmt == "iceberg":
+            if as_bytes:
+                raise BoothError(f"dataset {ds.get('name')!r} is an Iceberg table, not one object: read it without as_bytes")
+            return self._read_iceberg(ds, **pandas_kwargs)
+        if fmt != "file":
+            raise BoothError(f"dataset {ds.get('name')!r} has format {fmt!r}, which this version of booth can't read")
         loc = ds.get("location") or {}
         backend, path = loc.get("backendId", ""), loc.get("path", "")
         if not backend or not path:
@@ -272,9 +298,39 @@ class Client:
         fn, defaults = _READERS[ext]
         return getattr(pd, fn)(io.BytesIO(data), **{**defaults, **pandas_kwargs})
 
+    def _read_iceberg(self, ds: dict, columns=None, where=None, snapshot_id=None, **unexpected):
+        """ADR 0085: an ``iceberg`` dataset names its table in ``table: {namespace, name, ...}``; open it
+        through booth_lakehouse (catalog + scoped storage credentials, ADR 0079/0080) rather than reading
+        bytes. Reads the table's latest state unless ``snapshot_id`` is given — the catalog's
+        ``currentSnapshotId`` can lag behind the table, so it isn't pinned by default."""
+        name = ds.get("name")
+        if unexpected:
+            raise BoothError(f"{', '.join(sorted(unexpected))}: not options for an Iceberg table (use columns=, where=, snapshot_id=)")
+        table = ds.get("table") or {}
+        namespace, table_name = table.get("namespace", ""), table.get("name", "")
+        if not namespace or not table_name:
+            raise BoothError(f"dataset {name!r} is marked as an Iceberg table but doesn't say which table")
+        try:
+            from booth_lakehouse import Lakehouse, LakehouseError
+        except ImportError:
+            raise BoothError(
+                f"dataset {name!r} is an Iceberg table; reading it needs the booth_lakehouse client "
+                "(booth-lakehouse-client), which isn't installed in this environment"
+            ) from None
+        try:
+            arrow = Lakehouse.from_env(env=self._env).read(f"{namespace}.{table_name}", columns=columns, where=where, snapshot_id=snapshot_id)
+        except LakehouseError as e:
+            raise BoothError(f"couldn't read Iceberg table {namespace}.{table_name}: {e}", getattr(e, "status", 0)) from e
+        try:
+            import pandas  # noqa: F401
+        except ImportError:
+            return arrow
+        return arrow.to_pandas()
+
 
 _default = Client()
 storage = _default.storage
 catalog = _default.catalog
 read_dataset = _default.read_dataset
+platform_token = _default.platform_token
 workspace = _default.workspace

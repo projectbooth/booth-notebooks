@@ -17,6 +17,12 @@ DATASETS = [
     {"id": "d3", "name": "dup", "location": {"backendId": "lake", "path": "b.csv"}},
     {"id": "d4", "name": "partitioned", "location": {"backendId": "lake", "path": "events/"}},
     {"id": "d5", "name": "blob", "location": {"backendId": "lake", "path": "model.bin"}},
+    # ADR 0085: an Iceberg table registered as a dataset (a directory location, plus its table block)
+    {"id": "d6", "name": "daily-orders", "format": "iceberg", "location": {"backendId": "lake", "path": "warehouse/sales/daily/"},
+     "table": {"namespace": "sales", "name": "daily", "uuid": "u-1", "currentSnapshotId": 42}},
+    {"id": "d7", "name": "broken-table", "format": "iceberg", "location": {"backendId": "lake", "path": "warehouse/x/"}},
+    {"id": "d8", "name": "future-format", "format": "delta", "location": {"backendId": "lake", "path": "d/"}},
+    {"id": "d9", "name": "explicit-file", "format": "file", "location": {"backendId": "lake", "path": "sales/daily.csv"}},
 ]
 OBJECTS = {("lake", "sales/daily.csv"): b"day,amount\n1,10\n2,20\n", ("lake", "model.bin"): b"\x00\x01"}
 
