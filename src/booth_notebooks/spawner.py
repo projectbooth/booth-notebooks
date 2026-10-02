@@ -211,6 +211,22 @@ class BoothSpawner(KubeSpawner):
             },
         ]
 
+    def is_pod_running(self, pod):
+        """The server is up when the NOTEBOOK container is ready; the credential sidecar and its token helper
+        don't count. KubeSpawner's own check requires every container to be ready, and with the sidecar's
+        readiness tied to holding a broker lease, that made a notebook unable to start at all whenever the
+        broker refused or booth-database was down (found by the kind suite, whose stand-in core has no
+        broker). Database access is an optional extra: without a lease, a DATABASE_URL connection gets the
+        proxy's error; the notebook itself works. Pod readiness (kubectl) still reports the sidecar's health."""
+        if pod is None or "deletionTimestamp" in pod["metadata"]:
+            return False
+        status = pod["status"]
+        if status.get("phase") != "Running" or status.get("podIP") is None:
+            return False
+        statuses = {cs["name"]: cs for cs in status.get("containerStatuses") or []}
+        notebook = statuses.get("notebook")
+        return bool(notebook and notebook.get("ready"))
+
     async def get_pod_manifest(self):
         # Every pod carries its workspace as a label: what a per-workspace NetworkPolicy, quota or
         # "stop everything in workspace X" operation selects on.

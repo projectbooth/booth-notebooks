@@ -180,3 +180,35 @@ def test_check_pod_refuses_a_sidecar_listening_beyond_loopback():
     check_pod(_pod({"name": "s", "args": ["--kind=postgres", "--listen=127.0.0.1:5432"]}))
     with pytest.raises(UnsafePodSpec, match="loopback"):
         check_pod(_pod({"name": "s", "args": ["--kind=postgres", "--listen=0.0.0.0:5432"]}))
+
+
+# ---- the notebook never waits on the database path -------------------------------------------------
+
+
+def _running_pod(**ready):
+    return {"metadata": {}, "status": {"phase": "Running", "podIP": "10.0.0.5",
+                                       "containerStatuses": [{"name": n, "ready": r} for n, r in ready.items()]}}
+
+
+def test_the_server_is_up_when_the_notebook_is_ready_whatever_the_sidecar_is_doing():
+    """KubeSpawner's own check needs every container ready; with the sidecar's readiness tied to a broker
+    lease, a refused or down broker kept notebooks from starting at all (found on kind)."""
+    s = spawner(DB_ENV)
+    assert s.is_pod_running(_running_pod(notebook=True, **{"booth-token": False, "credential-sidecar": False}))
+    assert s.is_pod_running(_running_pod(notebook=True))  # no sidecar at all (boothDatabase.url unset)
+    assert not s.is_pod_running(_running_pod(notebook=False, **{"booth-token": True, "credential-sidecar": True}))
+
+
+def test_the_usual_not_running_cases_still_hold():
+    s = spawner()
+    assert not s.is_pod_running(None)
+    pending = _running_pod(notebook=True)
+    pending["status"]["phase"] = "Pending"
+    assert not s.is_pod_running(pending)
+    no_ip = _running_pod(notebook=True)
+    no_ip["status"]["podIP"] = None
+    assert not s.is_pod_running(no_ip)
+    deleting = _running_pod(notebook=True)
+    deleting["metadata"]["deletionTimestamp"] = "2026-10-02T00:00:00Z"
+    assert not s.is_pod_running(deleting)
+    assert not s.is_pod_running({"metadata": {}, "status": {"phase": "Running", "podIP": "1.2.3.4"}})  # no statuses yet
