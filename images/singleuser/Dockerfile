@@ -24,7 +24,9 @@ RUN pip install --no-cache-dir \
       "pandas>=2.2,<3" \
       "pyarrow>=17" \
       "matplotlib>=3.9,<4" \
-      "duckdb>=1.1,<2"
+      "duckdb>=1.1,<2" \
+      "psycopg[binary]>=3.2,<4" \
+      "sqlalchemy>=2,<3"
 
 COPY --chown=1000:100 client /tmp/booth-client
 RUN pip install --no-cache-dir /tmp/booth-client && rm -rf /tmp/booth-client

@@ -272,18 +272,39 @@ def test_the_database_rule_follows_the_configured_booth_database_install():
     assert rule["to"][0]["namespaceSelector"]["matchLabels"] == {"kubernetes.io/metadata.name": "data"}
 
 
-def test_booth_database_url_only_touches_the_notebook_pod_policy():
-    """It gates a network rule and nothing else: the hub's own database wiring (ADR 0053) is unrelated
-    and unchanged, and the kernel gets the real host from core's credential broker, not from this value."""
+def test_booth_database_url_only_adds_the_egress_rule_and_the_sidecar_switch():
+    """It gates the network rule (ADR 0092) and the credential sidecar (ADR 0095) and nothing else: the
+    proxy and the hub/proxy policies don't move, and the hub's own database wiring (ADR 0053) is unrelated.
+    The kernel gets the real host from core's credential broker, never from this value."""
     base, with_db = docs(), docs("--set", f"boothDatabase.url={DB_URL}")
-    for kind, name in [("Deployment", f"{FULL}-hub"), ("Deployment", f"{FULL}-proxy"),
-                       ("NetworkPolicy", f"{FULL}-hub"), ("NetworkPolicy", f"{FULL}-proxy")]:
+    for kind, name in [("Deployment", f"{FULL}-proxy"), ("NetworkPolicy", f"{FULL}-hub"), ("NetworkPolicy", f"{FULL}-proxy")]:
         a, b = one(base, kind, name), one(with_db, kind, name)
         for d in (a, b):  # the hub's checksum/config annotation hashes all values, so it moves with any change
             d.get("spec", {}).get("template", {}).get("metadata", {}).get("annotations", {}).pop("checksum/config", None)
         assert a == b, f"{kind} {name} changed"
-    assert env(one(with_db, "Deployment", f"{FULL}-hub"))["BOOTH_NOTEBOOKS_DATABASE_DSN"]["valueFrom"]["secretKeyRef"] == {
-        "name": "booth-database-credentials", "key": "dsn"}
+    hub_base, hub_db = env(one(base, "Deployment", f"{FULL}-hub")), env(one(with_db, "Deployment", f"{FULL}-hub"))
+    assert hub_db["BOOTH_NOTEBOOKS_DATABASE_DSN"]["valueFrom"]["secretKeyRef"] == {"name": "booth-database-credentials", "key": "dsn"}
+    assert set(hub_db) - set(hub_base) == {"BOOTH_NOTEBOOKS_BOOTH_DATABASE_URL", "BOOTH_NOTEBOOKS_CREDENTIAL_SIDECAR_IMAGE"}
+    assert hub_db["BOOTH_NOTEBOOKS_BOOTH_DATABASE_URL"]["value"] == DB_URL
+    assert "BOOTH_NOTEBOOKS_BOOTH_DATABASE_URL" not in hub_base  # unset: no sidecar at all
+
+
+def test_the_credential_sidecar_image_is_pinned_by_digest_and_a_tag_is_refused():
+    with_db = env(one(docs("--set", f"boothDatabase.url={DB_URL}"), "Deployment", f"{FULL}-hub"))
+    assert re.fullmatch(r"ghcr\.io/projectbooth/credential-sidecar@sha256:[0-9a-f]{64}", with_db["BOOTH_NOTEBOOKS_CREDENTIAL_SIDECAR_IMAGE"]["value"])
+    out = helm("template", "x", str(CHART), *REQUIRED, "--set", f"boothDatabase.url={DB_URL}",
+               "--set", "credentialSidecar.image=ghcr.io/projectbooth/credential-sidecar:latest")
+    assert out.returncode != 0 and "pinned by digest" in out.stderr
+
+
+def test_the_rendered_sidecar_settings_are_a_valid_hub_configuration():
+    """Chart and code agree: the env the chart renders configures the spawner's sidecar."""
+    h = one(docs("--set", f"boothDatabase.url={DB_URL}", "--set", "credentialSidecar.renewIntervalSeconds=5"), "Deployment", f"{FULL}-hub")
+    c = Config()
+    configure(c, _hub_env_as_the_container_sees_it(h))
+    assert c.BoothSpawner.booth_database_url == DB_URL
+    assert c.BoothSpawner.credential_sidecar_image.startswith("ghcr.io/projectbooth/credential-sidecar@sha256:")
+    assert c.BoothSpawner.sidecar_renew_interval_seconds == 5
 
 
 def test_the_old_database_url_name_fails_loudly_instead_of_silently_rendering_no_rule():

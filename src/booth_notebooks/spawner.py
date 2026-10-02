@@ -15,12 +15,35 @@ quietly handing a tenant the keys.
 
 from __future__ import annotations
 
-from kubespawner import KubeSpawner
-from traitlets import Unicode
+import hashlib
+import json
 
-from .identity import workspace_of
+from kubespawner import KubeSpawner
+from traitlets import Integer, Unicode
+
+from .identity import EDITOR, OWNER, workspace_of
 
 WORKSPACE_LABEL = "booth.projectbooth.io/workspace"
+
+# ADR 0095: booth-core's credential sidecar, postgres mode. Loopback only, by contract.
+SIDECAR_LISTEN = "127.0.0.1:5432"
+SIDECAR_DIR = "/var/run/booth-sidecar"  # memory-backed, shared by the token helper and the sidecar only
+SIDECAR_TOKEN_FILE = f"{SIDECAR_DIR}/token"
+SIDECAR_VOLUME = "booth-sidecar"
+_LOOPBACK_URL_PREFIXES = ("postgresql://localhost:", "postgresql://127.0.0.1:")
+
+
+def _literal(value: str) -> str:
+    """KubeSpawner str.format()s every string in extra_containers (for "{username}" templating), so a
+    literal brace — the JSON in --scope — must be doubled to survive as itself."""
+    return value.replace("{", "{{").replace("}", "}}")
+
+
+def workspace_database(workspace: str) -> str:
+    """The workspace's database name in booth-database (its internal/naming.ForWorkspace). Informational
+    only: the sidecar always connects to the database its credential names, whatever a client asks for,
+    so this just makes DATABASE_URL and current_database() agree."""
+    return "bdb_ws_" + hashlib.sha256(f"booth-database/workspace/{workspace}".encode()).hexdigest()[:24]
 
 # Secrets that must never be readable from a pod that runs user code.
 FORBIDDEN_SECRETS = frozenset(
@@ -78,8 +101,16 @@ def check_pod(pod, extra_forbidden: frozenset[str] = frozenset()) -> None:
             ref = ((e.get("valueFrom") or {}).get("secretKeyRef") or {}).get("name")
             if ref in forbidden:
                 raise UnsafePodSpec(f"notebook pods must not read the {ref} Secret")
+            value = str(e.get("value", ""))
+            if e.get("name") == "DATABASE_URL" and value.startswith(_LOOPBACK_URL_PREFIXES) and "@" not in value:
+                continue  # the credential sidecar's loopback listener (ADR 0095): no host, no credential in it
             if any(f in str(e.get("name", "")).upper() for f in _FORBIDDEN_ENV_FRAGMENTS):
                 raise UnsafePodSpec(f"notebook pods must not receive hub-side setting {e.get('name')}")
+        args = [str(a) for a in (c.get("args") or [])]
+        if any(a.startswith("--kind=") for a in args):
+            listen = next((a.split("=", 1)[1] for a in args if a.startswith("--listen=")), SIDECAR_LISTEN)
+            if not listen.startswith(("127.0.0.1:", "localhost:", "unix://")):
+                raise UnsafePodSpec(f"the credential sidecar must listen on loopback only, not {listen}")
         for ef in c.get("envFrom") or []:
             ref = (ef.get("secretRef") or {}).get("name")
             if ref in forbidden:
@@ -98,6 +129,19 @@ class BoothSpawner(KubeSpawner):
     )
     platform_token_path = Unicode("/booth/platform-token", help="Under JUPYTERHUB_API_URL.")
 
+    # ADR 0095: native Postgres access to a workspace's booth-database through booth-core's credential
+    # sidecar. Gated by the same boothDatabase.url value as the ADR 0092 egress rule: unset means no
+    # sidecar, no token helper, no DATABASE_URL.
+    booth_database_url = Unicode("", config=True, help="Non-empty enables the postgres credential sidecar.")
+    core_url = Unicode("", config=True, help="booth-core's base URL; the sidecar calls its credential broker.")
+    credential_sidecar_image = Unicode("", config=True, help="ghcr.io/projectbooth/credential-sidecar@sha256:... (pinned).")
+    sidecar_renew_margin_seconds = Integer(0, config=True, help="0 = the sidecar's own default.")
+    sidecar_renew_interval_seconds = Integer(0, config=True, help="0 = the sidecar's own default.")
+
+    @property
+    def database_sidecar_enabled(self) -> bool:
+        return bool(self.booth_database_url)
+
     def get_env(self):
         env = super().get_env()
         env["BOOTH_WORKSPACE"] = workspace_of(self.user.name)
@@ -105,12 +149,84 @@ class BoothSpawner(KubeSpawner):
             env["BOOTH_GATEWAY_URL"] = self.gateway_url
         # JUPYTERHUB_API_URL is set by JupyterHub; the kernel client builds the token URL from it.
         env["BOOTH_PLATFORM_TOKEN_PATH"] = self.platform_token_path
+        if self.database_sidecar_enabled:
+            # Read like any other DATABASE_URL: no host, no credential, no platform knowledge in it. The
+            # sidecar on loopback holds all of that (ADR 0095).
+            env["DATABASE_URL"] = f"postgresql://localhost:5432/{workspace_database(workspace_of(self.user.name))}"
         return env
+
+    def database_sidecar_containers(self, env: dict, access: str) -> list[dict]:
+        """The token helper and the postgres-mode credential sidecar (contracts/credential-sidecar.md)."""
+        ws = workspace_of(self.user.name)
+        locked = {
+            "runAsNonRoot": True,
+            "allowPrivilegeEscalation": False,
+            "capabilities": {"drop": ["ALL"]},
+            "seccompProfile": {"type": "RuntimeDefault"},
+        }
+        token_env = ["JUPYTERHUB_API_URL", "JUPYTERHUB_API_TOKEN", "BOOTH_WORKSPACE", "BOOTH_PLATFORM_TOKEN_PATH"]
+        sidecar_env = []
+        if self.sidecar_renew_margin_seconds:
+            sidecar_env.append({"name": "RENEW_MARGIN_SECONDS", "value": str(self.sidecar_renew_margin_seconds)})
+        if self.sidecar_renew_interval_seconds:
+            sidecar_env.append({"name": "RENEW_INTERVAL_SECONDS", "value": str(self.sidecar_renew_interval_seconds)})
+        return [
+            {
+                # Keeps the notebook's own platform token (booth.platform_token(), ADR 0056) fresh in a
+                # file for the sidecar, and runs the sidecar's readiness check: its /healthz is
+                # loopback-only and its image distroless, so neither a kubelet httpGet nor an exec in its
+                # own container can reach it. This container shares the pod's network namespace.
+                "name": "booth-token",
+                "image": self.image,
+                "imagePullPolicy": self.image_pull_policy,
+                "command": ["python", "-m", "booth.sidecar_token", "write", SIDECAR_TOKEN_FILE],
+                "env": [{"name": k, "value": _literal(str(env[k]))} for k in token_env if k in env],
+                "volumeMounts": [{"name": SIDECAR_VOLUME, "mountPath": SIDECAR_DIR}],
+                "securityContext": {**locked, "runAsUser": 1000, "runAsGroup": 100},
+                "readinessProbe": {
+                    "exec": {"command": ["python", "-m", "booth.sidecar_token", "probe", f"http://{SIDECAR_LISTEN}/healthz"]},
+                    "periodSeconds": 5,
+                    "timeoutSeconds": 5,
+                },
+                "resources": {"requests": {"cpu": "10m", "memory": "48Mi"}, "limits": {"cpu": "200m", "memory": "128Mi"}},
+            },
+            {
+                "name": "credential-sidecar",
+                "image": self.credential_sidecar_image,
+                "imagePullPolicy": "IfNotPresent",
+                "args": [
+                    "--kind=postgres",
+                    "--scope=" + _literal(json.dumps({"workspace": ws}, separators=(",", ":"))),
+                    f"--access={access}",
+                    f"--listen={SIDECAR_LISTEN}",
+                    f"--core-url={self.core_url}",
+                    f"--workspace={ws}",
+                    f"--token-file={SIDECAR_TOKEN_FILE}",
+                ],
+                "env": sidecar_env,
+                "volumeMounts": [{"name": SIDECAR_VOLUME, "mountPath": SIDECAR_DIR, "readOnly": True}],
+                # distroless nonroot (65532); reads the 0640 token file through the pod's fsGroup (100)
+                "securityContext": {**locked, "runAsUser": 65532, "runAsGroup": 65532, "readOnlyRootFilesystem": True},
+                "resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"cpu": "200m", "memory": "64Mi"}},
+            },
+        ]
 
     async def get_pod_manifest(self):
         # Every pod carries its workspace as a label: what a per-workspace NetworkPolicy, quota or
         # "stop everything in workspace X" operation selects on.
         self.extra_labels = {**self.extra_labels, WORKSPACE_LABEL: workspace_of(self.user.name)}
-        pod = await super().get_pod_manifest()
+        saved = (self.extra_containers, self.volumes)
+        if self.database_sidecar_enabled:
+            # The broker refuses `readwrite` to a viewer, and a refusal makes the sidecar exit (contract:
+            # a config error should crash-loop visibly). Viewers may open notebooks (ADR 0070), so ask for
+            # exactly what the person's role allows. The token is role-capped live either way.
+            state = await self.user.get_auth_state() or {}
+            access = "readwrite" if state.get("role") in (OWNER, EDITOR) else "read"
+            self.extra_containers = [*saved[0], *self.database_sidecar_containers(self.get_env(), access)]
+            self.volumes = [*saved[1], {"name": SIDECAR_VOLUME, "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}]
+        try:
+            pod = await super().get_pod_manifest()
+        finally:
+            self.extra_containers, self.volumes = saved
         check_pod(pod)
         return pod

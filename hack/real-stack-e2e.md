@@ -28,3 +28,17 @@ BOOTH_REAL_SHELL_URL=http://localhost:8090 BOOTH_REAL_PASSWORD=$(cat .real-stack
 
 Needs `websocket-client` (in the dev extra). The shell can be on any port since core `fa11da0` mints a
 relative iframe URL. Keycloak must answer as `keycloak.keycloak.svc:8080` because tokens carry that issuer.
+
+## ADR 0095: the credential sidecar against a real booth-database
+
+```sh
+WITH_BOOTH_DATABASE=1 SKIP_DESIGN=1 BDB_MIN_TTL=90s BDB_REAP_INTERVAL=3s KIND=kind sh hack/real-stack-up.sh
+kubectl -n keycloak port-forward svc/keycloak 8080:8080 &
+kubectl -n booth-system port-forward svc/booth-core 18080:8080 &     # no shell: core serves /iframe/ itself
+BOOTH_REAL_SHELL_URL=http://localhost:18080 BOOTH_REAL_SIDECAR=1 BOOTH_REAL_PASSWORD=$(cat .real-stack/password)   pytest tests/realstack/test_credential_sidecar.py -v -s
+```
+
+The short lease floor (90s) makes rotation and lease expiry visible in minutes. The test flips
+`boothDatabase.url` itself (unset, then set) with `helm upgrade --reuse-values`. It writes the rotation
+timeline to `BOOTH_REAL_SIDECAR_REPORT` (default `sidecar-rotation.json`). Needs ~5 GB of free memory: on a
+starved host the hub's own readiness check of a spawned server can lag by minutes (seen).
