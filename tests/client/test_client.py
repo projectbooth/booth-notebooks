@@ -64,6 +64,9 @@ class Fake:
 
             def do_POST(self):
                 if self.path == "/hub/api/booth/platform-token":
+                    # Drain the request body before answering: closing a socket with unread data makes
+                    # Windows send RST, which the client reports as WinError 10053 (seen as a flaky test).
+                    self.rfile.read(int(self.headers.get("Content-Length") or 0))
                     assert self.headers["Authorization"] == "token hub-token"
                     fake.token_requests += 1
                     if fake.hub_status != 200:

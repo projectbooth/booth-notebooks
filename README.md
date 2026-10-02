@@ -78,8 +78,10 @@ Key values: `identity.*`/`oidc.*` (who may log in), `singleuser.*` (image, resou
 framing origin, egress), `hub.cullIdleSeconds`, `hub.sessionSeconds`, `workloadIdentity.enabled`,
 `core.namespaceSelector`/`podSelector` (must match your core install: they gate proxy ingress and pod
 egress), `boothDatabase.url` (set once a bundled-mode booth-database is installed, to let notebook pods reach
-its Postgres on 5432; selectors under `singleuser.networkPolicy.egress.boothDatabase`, ADR 0092; external-mode
-booth-database goes in `egress.extra`). NetworkPolicies need a CNI that enforces them.
+its Postgres on 5432 *and* to run booth-core's credential sidecar in every notebook pod, giving kernels
+`DATABASE_URL=postgresql://localhost:5432/<db>` with no credential in it (ADR 0092/0095); selectors under
+`singleuser.networkPolicy.egress.boothDatabase`; external-mode booth-database goes in `egress.extra`),
+`credentialSidecar.image` (pinned by digest; a tag is refused). NetworkPolicies need a CNI that enforces them.
 
 ### Data lifecycle
 
@@ -124,4 +126,5 @@ protection), `.github/workflows/integration.yml` (layer 3, merge to `main` and n
 - [0004](docs/decisions/0004-adr-0069-adoption-and-real-stack-findings.md): ADR 0069 adoption, real-stack verification, two findings (both since fixed in core/design).
 - [0005](docs/decisions/0005-third-pass-real-stack-verification.md): third pass: fixes verified, the notebook-session-lifetime bug fixed, a kernel reading real registered data.
 - [0006](docs/decisions/0006-adr-0075-theme-sync-extension.md): the ADR 0075 theme-sync JupyterLab extension: build, and end-to-end verification through the real shell.
+- [0008](docs/decisions/0008-credential-sidecar-adoption.md): booth-core's credential sidecar (ADR 0095): postgres mode shipped and verified on a real cluster; s3 mode blocked; two cross-module findings.
 - [0007](docs/decisions/0007-lakehouse-client-support.md): `booth.platform_token()` and reading Iceberg datasets through `booth_lakehouse`.

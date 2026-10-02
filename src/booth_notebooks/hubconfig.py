@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import sys
 from collections.abc import Mapping
@@ -156,6 +157,20 @@ def configure(c, env: Mapping[str, str] | None = None) -> None:  # noqa: PLR0915
     s = c.BoothSpawner
     s.namespace = env.get("POD_NAMESPACE", "") or "default"
     s.gateway_url = gateway
+    # ADR 0095: the postgres credential sidecar, behind the same boothDatabase.url gate as the ADR 0092
+    # egress rule. It needs core (the broker) and a digest-pinned image; never a floating tag.
+    booth_database_url = env.get("BOOTH_NOTEBOOKS_BOOTH_DATABASE_URL", "")
+    if booth_database_url:
+        image = env.get("BOOTH_NOTEBOOKS_CREDENTIAL_SIDECAR_IMAGE", "")
+        if not re.search(r"@sha256:[0-9a-f]{64}$", image):
+            raise ConfigError("BOOTH_NOTEBOOKS_CREDENTIAL_SIDECAR_IMAGE must be pinned by digest (…/credential-sidecar@sha256:<64 hex>), never a tag")
+        if not core_url:
+            raise ConfigError("boothDatabase.url needs BOOTH_CORE_URL: the credential sidecar calls booth-core's broker")
+        s.booth_database_url = booth_database_url
+        s.core_url = core_url
+        s.credential_sidecar_image = image
+        s.sidecar_renew_margin_seconds = _int(env, "BOOTH_NOTEBOOKS_SIDECAR_RENEW_MARGIN_SECONDS", 0, 0)
+        s.sidecar_renew_interval_seconds = _int(env, "BOOTH_NOTEBOOKS_SIDECAR_RENEW_INTERVAL_SECONDS", 0, 0)
     s.image = env.get("BOOTH_NOTEBOOKS_SINGLEUSER_IMAGE", "ghcr.io/projectbooth/booth-notebooks-singleuser:0.1.0")
     s.image_pull_policy = env.get("BOOTH_NOTEBOOKS_SINGLEUSER_PULL_POLICY", "IfNotPresent")
     s.slug_scheme = "safe"

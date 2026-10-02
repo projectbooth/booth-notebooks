@@ -3,7 +3,11 @@
 # booth-core, the real booth-design shell, and this chart — plus, with WITH_DATA=1, real booth-storage and
 # booth-catalog. See hack/real-stack-e2e.md. Idempotent enough to re-run after a failure.
 #
-# Needs sibling checkouts (booth-core, booth-design, booth-e2e; booth-storage/booth-catalog for WITH_DATA),
+# WITH_BOOTH_DATABASE=1 adds a real bundled booth-database (ADR 0095 sidecar tests); SKIP_DESIGN=1 skips
+# the shell (tests can drive core's own /iframe/ path).
+#
+# Needs sibling checkouts (booth-core, booth-design, booth-e2e; booth-storage/booth-catalog for WITH_DATA,
+# booth-database for WITH_BOOTH_DATABASE),
 # docker, kind, kubectl, helm, and booth-design's node_modules (its SPA is built locally, like booth-e2e does).
 set -eu
 
@@ -21,18 +25,25 @@ step() { printf '\n==> %s\n' "$*"; }
 
 step "images"
 docker build -q -t booth-core:e2e "$REPOS/booth-core" >/dev/null
-(cd "$REPOS/booth-design" && npx vite build >/dev/null)
-ctx="$STATE/design-ctx"; rm -rf "$ctx"; mkdir -p "$ctx"
-cp -r "$REPOS/booth-design/dist" "$REPOS/booth-design/docker" "$ctx/"
-cp "$REPOS/booth-e2e/bringup/Dockerfile.design" "$ctx/Dockerfile"
-sed -i 's/\r$//' "$ctx"/docker/*.sh "$ctx"/docker/*.template; chmod +x "$ctx"/docker/*.sh
-docker build -q -t booth-design:e2e "$ctx" >/dev/null
+if [ "${SKIP_DESIGN:-0}" != "1" ]; then
+  (cd "$REPOS/booth-design" && npx vite build >/dev/null)
+  ctx="$STATE/design-ctx"; rm -rf "$ctx"; mkdir -p "$ctx"
+  cp -r "$REPOS/booth-design/dist" "$REPOS/booth-design/docker" "$ctx/"
+  cp "$REPOS/booth-e2e/bringup/Dockerfile.design" "$ctx/Dockerfile"
+  sed -i 's/\r$//' "$ctx"/docker/*.sh "$ctx"/docker/*.template; chmod +x "$ctx"/docker/*.sh
+  docker build -q -t booth-design:e2e "$ctx" >/dev/null
+fi
+if [ "${WITH_BOOTH_DATABASE:-0}" = "1" ]; then
+  docker build -q -t booth-database:e2e "$REPOS/booth-database" >/dev/null
+fi
 docker build -q -t booth-notebooks-hub:ci -f "$HERE/images/hub/Dockerfile" "$HERE" >/dev/null
 docker build -q -t booth-notebooks-singleuser:ci -f "$HERE/images/singleuser/Dockerfile" "$HERE" >/dev/null
 
 step "cluster + image load"
 "$KIND" get clusters 2>/dev/null | grep -qx "$CLUSTER" || "$KIND" create cluster --name "$CLUSTER" --wait 120s
-"$KIND" load docker-image --name "$CLUSTER" booth-core:e2e booth-design:e2e booth-notebooks-hub:ci
+"$KIND" load docker-image --name "$CLUSTER" booth-core:e2e booth-notebooks-hub:ci
+[ "${SKIP_DESIGN:-0}" = "1" ] || "$KIND" load docker-image --name "$CLUSTER" booth-design:e2e
+[ "${WITH_BOOTH_DATABASE:-0}" != "1" ] || "$KIND" load docker-image --name "$CLUSTER" booth-database:e2e
 # The 2 GB notebook image via an archive: streaming it spiked host memory on Docker Desktop.
 docker save -o "$STATE/su.tar" booth-notebooks-singleuser:ci
 "$KIND" load image-archive --name "$CLUSTER" "$STATE/su.tar"; rm -f "$STATE/su.tar"
@@ -54,10 +65,24 @@ helm --kube-context "kind-$CLUSTER" upgrade --install booth-core "$REPOS/booth-c
   --set-string iframeSigningKey="$(python -c 'import secrets;print(secrets.token_hex(32))')" \
   --set image.repository=booth-core --set image.tag=e2e --set image.pullPolicy=Never --wait --timeout 8m >/dev/null
 
-step "booth-design (the shell)"
-helm --kube-context "kind-$CLUSTER" upgrade --install booth-design "$REPOS/booth-design/charts/booth-design" -n booth-design \
-  --set core.gatewayUrl=$CORE --set oidc.issuerUrl=$ISSUER --set oidc.clientId=booth-design \
-  --set image.repository=booth-design --set image.tag=e2e --set image.pullPolicy=Never --wait --timeout 5m >/dev/null
+if [ "${SKIP_DESIGN:-0}" != "1" ]; then
+  step "booth-design (the shell)"
+  helm --kube-context "kind-$CLUSTER" upgrade --install booth-design "$REPOS/booth-design/charts/booth-design" -n booth-design \
+    --set core.gatewayUrl=$CORE --set oidc.issuerUrl=$ISSUER --set oidc.clientId=booth-design \
+    --set image.repository=booth-design --set image.tag=e2e --set image.pullPolicy=Never --wait --timeout 5m >/dev/null
+fi
+
+if [ "${WITH_BOOTH_DATABASE:-0}" = "1" ]; then
+  # A real booth-database in bundled mode: the postgres-kind credential provider (ADR 0081/0088). Core
+  # delivers its provider credential and labels notebook namespaces database-client itself.
+  # BDB_MIN_TTL / BDB_REAP_INTERVAL shorten its lease floor so a rotation test sees lease expiry.
+  step "booth-database (bundled)"
+  $KC create namespace booth-database >/dev/null 2>&1 || true
+  helm --kube-context "kind-$CLUSTER" upgrade --install booth-database "$REPOS/booth-database/charts/booth-database" -n booth-database \
+    --set image.repository=booth-database --set image.tag=e2e --set image.pullPolicy=Never \
+    --set bundled.storage.size=1Gi --set leases.minTTL="${BDB_MIN_TTL:-1h}" --set leases.reapInterval="${BDB_REAP_INTERVAL:-10s}" \
+    --wait --timeout 6m >/dev/null
+fi
 
 if [ "${WITH_DATA:-0}" = "1" ]; then
   step "booth-storage + booth-catalog (real modules a kernel reads through core's gateway)"

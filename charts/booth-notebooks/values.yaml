@@ -51,8 +51,22 @@ database:
 # rule. Empty (the default, since booth-database is optional) renders no rule. The kernel learns the
 # actual host from core's credential broker, not from this value; it only gates the rule. External-mode
 # booth-database has no in-cluster pod to select: use singleuser.networkPolicy.egress.extra instead.
+#
+# The same value also turns on ADR 0095's credential sidecar in every notebook pod: booth-core's broker
+# issues a short-lived Postgres credential on the notebook's own identity, the sidecar renews it and
+# proxies on 127.0.0.1:5432, and the notebook gets DATABASE_URL=postgresql://localhost:5432/<db> — no host
+# or credential in user code.
 boothDatabase:
   url: ""
+
+# ADR 0095 / contracts/credential-sidecar.md: booth-core's sidecar image, PINNED BY DIGEST (the chart
+# refuses a tag). Published by booth-core's "Publish credential-sidecar" workflow; this is eb24bb3
+# (run 37012736996). Used only when boothDatabase.url is set.
+credentialSidecar:
+  image: ghcr.io/projectbooth/credential-sidecar@sha256:05e96332a0c721b20aaddd6616f902e02e81261dbdc798242cbabfea1b34e49f
+  # Renewal knobs (contract: RENEW_MARGIN_SECONDS / RENEW_INTERVAL_SECONDS). Empty = the sidecar's defaults.
+  renewMarginSeconds: ""
+  renewIntervalSeconds: ""
 
 # ADR 0056/0058: kernels call booth-storage/booth-catalog with a short-lived token core mints for their
 # notebook server. The minting credential is mounted into the hub ONLY — never a notebook pod (ADR 0057).
