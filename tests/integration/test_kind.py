@@ -180,7 +180,7 @@ def server_ready(client: httpx.Client, name: str) -> bool:
     # Fail fast, with the container's own output, if the notebook container is crash-looping:
     # KubeSpawner deletes the pod on spawn timeout, taking the only evidence with it.
     pod = notebook_pod(name)
-    statuses = (pod or {}).get("status", {}).get("containerStatuses") or []
+    statuses = [cs for cs in (pod or {}).get("status", {}).get("containerStatuses") or [] if cs["name"] == "notebook"]
     if statuses and statuses[0].get("restartCount", 0) > 0:
         logs = kubectl("-n", NS, "logs", pod["metadata"]["name"], "--previous", check=False)
         pytest.fail(f"notebook container for {name} is crash-looping:\n{logs[-4000:]}")
@@ -315,6 +315,11 @@ def test_the_same_person_in_another_workspace_gets_another_pod(base, core):
     assert r.status_code == 200, f"login/spawn refused ({r.status_code}): {r.text[:300]}"
     wait_for(lambda: server_ready(c, BETA), 300, "the beta notebook server")
     a, b = notebook_pod(ACME), notebook_pod(BETA)
+    # This pod was spawned after the ADR 0092 step set boothDatabase.url, so it carries the ADR 0095
+    # credential sidecar — and this suite's stand-in core has no credential broker, so the sidecar can never
+    # get a lease. The notebook must start anyway: database access is optional, never a precondition
+    # (BoothSpawner.is_pod_running). This test is the regression guard for that.
+    assert {"booth-token", "credential-sidecar"} <= {c["name"] for c in b["spec"]["containers"]}
     assert a["metadata"]["name"] != b["metadata"]["name"]
     assert b["metadata"]["labels"]["booth.projectbooth.io/workspace"] == "beta"
     assert a["spec"]["volumes"][0]["persistentVolumeClaim"]["claimName"] != b["spec"]["volumes"][0]["persistentVolumeClaim"]["claimName"]

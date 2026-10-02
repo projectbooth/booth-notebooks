@@ -57,6 +57,22 @@ A real Keycloak user logs in through core's real `/iframe/` path and spawns.
   ready. The hub checked the (already running) server 16 minutes late, with the host at 0.5 GB free. The
   query and rotation checks were then run against that live pod with the test module's own code.
 
+## Fixed after merge: the database path must never block a notebook from starting
+
+As first merged (#5), a notebook couldn't start whenever the sidecar couldn't get a lease. KubeSpawner
+counts a server as started only when *every* container is ready, and the token helper's readiness is the
+sidecar holding a lease. So a refused request, a down broker or a down booth-database left the user with no
+notebook at all, not just no database. `main`'s post-merge Integration run caught it: the kind suite's
+stand-in core has no broker, and the second workspace's notebook never started.
+
+`BoothSpawner.is_pod_running` now counts the server as up when the **notebook** container is ready. The
+sidecar and token helper don't gate it. **Judgment call against the contract's letter:** it says a kernel
+that starts before its sidecar has a lease "should wait, not fail". A notebook is useful without a
+database, so it doesn't wait. Instead, a connection made before the lease gets the proxy's own error (not
+an opaque connection-refused, per the sidecar's code), and the pod's readiness still shows the sidecar's
+state. The kind suite keeps this as a regression test: the second workspace's notebook is spawned with the
+sidecar present, against a core with no broker, and must start.
+
 ## Finding 1 (booth-core contract vs booth-database): an open connection dies when its lease expires
 
 The sidecar contract says connections open on a prior credential "are left alone until they close
