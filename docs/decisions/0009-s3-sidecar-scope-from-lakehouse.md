@@ -110,8 +110,49 @@ it. Path style isn't in the file either, and DuckDB needs it for MinIO. Options 
    without reading the file itself.
 
 Recommendation: option 1, owned here, with `pathStyle` added to the config file by booth-core
-(`s3 =\n  addressing_style = path`, which botocore reads) so that nothing is guessed. Not built pending a
-ruling.
+(`s3 =\n  addressing_style = path`, which botocore reads) so that nothing is guessed.
+
+**Ruled (ADR 0095 fourth amendment): option 1. Built as `booth.s3`.** booth-core is adding
+`addressing_style` to the config file, and the 0600/uid-1000 arrangement is now the contract's stated
+requirement.
+
+## `booth.s3`: the helper (client/src/booth/s3.py)
+
+```python
+import booth.s3, duckdb
+fs = booth.s3.pyarrow_filesystem()          # pyarrow.fs.S3FileSystem pointed at this notebook's backend
+con = duckdb.connect(); booth.s3.duckdb_secret(con)   # CREATE OR REPLACE SECRET booth_s3 (...)
+booth.s3.location()                          # Location(endpoint_url, region, addressing_style)
+```
+
+- **Only the location is handed over.** That means endpoint host and port, scheme (pyarrow `scheme`,
+  DuckDB `USE_SSL`), region, and addressing style. Keys stay with each engine's own AWS credential chain,
+  which reads the sidecar's file, so no key passes through Python or into SQL text. DuckDB's secret is
+  `PROVIDER credential_chain, REFRESH auto`.
+- **Nothing is hardcoded to MinIO.** Addressing style is used only when the file states it, in botocore's
+  nested `s3 = / addressing_style = …` form or as a flat key; until then each engine keeps its own default.
+  With no config section (real AWS, where the sidecar writes none), the engines get nothing but their
+  defaults.
+- **Errors:** `BoothError` when this pod has no s3 sidecar (with the reason: no warehouse yet, or
+  `boothStorage.url` off; picked up at the next server start), and when the first lease hasn't been
+  written yet.
+- Standard library only. pyarrow and DuckDB are imported only when their helper is called.
+
+**Measured** against the real `ff7572b` sidecar and MinIO, from the singleuser image with the helper
+mounted, running as uid 1000 with only the two `AWS_*` variables set:
+
+| config file | pyarrow 25.0.1 | DuckDB 1.5.6 |
+|---|---|---|
+| as `ff7572b` writes it (no addressing style) | **works** (pyarrow defaults to path style with an endpoint) | fails: virtual-host default, `lake.minio:9000` |
+| + `s3 =\n    addressing_style = path` (botocore form) | works | **works** |
+| + `addressing_style = path` (flat) | works | **works** |
+
+**Rotation:** a filesystem and a secret created from revoked keys both failed. After the credentials
+file was atomically replaced with valid keys, as the sidecar does, **the same objects** worked from their
+very next call (0s). User code doesn't need to re-create either after a renewal.
+
+DuckDB end to end therefore waits on booth-core's `addressing_style` digest, tracked the same way as the
+endpoint one. Repinning `credentialSidecar.image` is the only change needed here.
 
 ## Tests
 

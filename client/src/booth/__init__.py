@@ -5,6 +5,7 @@
     df = booth.read_dataset("daily-sales")     # a registered dataset, by name or id -> DataFrame
     booth.storage.read("lake", "raw/x.csv")    # raw bytes from a storage backend ({backendId, path})
     booth.platform_token()                     # this notebook's current platform token, for other clients
+    booth.s3.pyarrow_filesystem()              # object storage through the credential sidecar (booth.s3)
 
 How identity works (ADR 0056/0057): the kernel never sees your browser's login. It asks the hub for
 a short-lived platform token (10 min, refreshed automatically), minted by booth-core for *this*
@@ -29,7 +30,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 
-__all__ = ["BoothError", "catalog", "storage", "read_dataset", "platform_token", "workspace", "Client"]
+__all__ = ["BoothError", "catalog", "storage", "read_dataset", "platform_token", "workspace", "Client", "s3"]
 __version__ = "0.1.0"
 
 
@@ -334,3 +335,5 @@ catalog = _default.catalog
 read_dataset = _default.read_dataset
 platform_token = _default.platform_token
 workspace = _default.workspace
+
+from . import s3  # noqa: E402  (object storage through the credential sidecar; imports BoothError from here)
