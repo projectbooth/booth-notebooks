@@ -81,6 +81,10 @@ egress), `boothDatabase.url` (set once a bundled-mode booth-database is installe
 its Postgres on 5432 *and* to run booth-core's credential sidecar in every notebook pod, giving kernels
 `DATABASE_URL=postgresql://localhost:5432/<db>` with no credential in it (ADR 0092/0095); selectors under
 `singleuser.networkPolicy.egress.boothDatabase`; external-mode booth-database goes in `egress.extra`),
+`boothStorage.url` (the in-cluster S3 backend's address: one egress rule to it, selectors required under
+`singleuser.networkPolicy.egress.boothStorage`, plus the sidecar's s3 mode for every pod whose workspace has
+a lakehouse warehouse, found at spawn via booth-lakehouse, giving kernels `AWS_SHARED_CREDENTIALS_FILE` and
+`AWS_CONFIG_FILE`; ADR 0095 third amendment, docs/decisions/0009),
 `credentialSidecar.image` (pinned by digest; a tag is refused). NetworkPolicies need a CNI that enforces them.
 
 ### Data lifecycle
@@ -128,3 +132,4 @@ protection), `.github/workflows/integration.yml` (layer 3, merge to `main` and n
 - [0006](docs/decisions/0006-adr-0075-theme-sync-extension.md): the ADR 0075 theme-sync JupyterLab extension: build, and end-to-end verification through the real shell.
 - [0008](docs/decisions/0008-credential-sidecar-adoption.md): booth-core's credential sidecar (ADR 0095): postgres mode shipped and verified on a real cluster; s3 mode blocked; two cross-module findings.
 - [0007](docs/decisions/0007-lakehouse-client-support.md): `booth.platform_token()` and reading Iceberg datasets through `booth_lakehouse`.
+- [0009](docs/decisions/0009-s3-sidecar-scope-from-lakehouse.md): the s3 sidecar (ADR 0095 third amendment): its scope from a spawn-time booth-lakehouse lookup (a new runtime coupling); measured against the real re-published sidecar; Finding 3, kernel engines ignore the config file's endpoint.

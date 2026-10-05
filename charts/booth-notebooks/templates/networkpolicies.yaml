@@ -82,6 +82,23 @@ spec:
       ports:
         - {protocol: TCP, port: 5432}
     {{- end }}
+    {{- if .Values.boothStorage.url }}
+    {{- $s := .Values.singleuser.networkPolicy.egress.boothStorage }}
+    {{- if or (empty $s.namespaceSelector) (empty $s.podSelector) }}
+    {{- fail "boothStorage.url is set, so singleuser.networkPolicy.egress.boothStorage.namespaceSelector and .podSelector are required: there is no standard booth-storage backend to default to, and an empty selector would match far more than your backend (ADR 0095)" }}
+    {{- end }}
+    # A workspace's booth-storage S3 backend (ADR 0095 third amendment), opt-in: only its pods, only its
+    # port. Same value and shape as booth-pipeline's runner rule.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml $s.namespaceSelector | nindent 14 }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $s.podSelector | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: {{ $s.port }}}
+    {{- end }}
     {{- with .Values.singleuser.networkPolicy.egress.extra }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

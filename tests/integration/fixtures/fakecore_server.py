@@ -4,6 +4,7 @@ Runs from a ConfigMap on a stock python image, stdlib only:
 * the identity-assertion issuer (discovery + JWKS; the test holds the private key and signs assertions),
 * ``POST /api/internal/workload-tokens`` (ADR 0058 shapes), checking the minting credential,
 * ``/modules/catalog/api/datasets`` as the gateway would route it, so a kernel's call can be observed,
+* ``/modules/lakehouse/api/warehouse``: a warehouse for workspace "beta", 404 for any other,
 * ``GET /_records`` — what was minted and which gateway calls arrived, for the test to assert on.
 
 It is not booth-core: it proves this module's side of each contract, not core's.
@@ -15,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ISSUER = os.environ["ISSUER"]
 CREDENTIAL = os.environ["CREDENTIAL"]
-RECORDS = {"mints": [], "gateway": []}
+RECORDS = {"mints": [], "gateway": [], "lakehouse": []}
 
 
 class H(BaseHTTPRequestHandler):
@@ -39,6 +40,14 @@ class H(BaseHTTPRequestHandler):
         if self.path.startswith("/modules/catalog/api/datasets"):
             RECORDS["gateway"].append({"path": self.path, "auth": self.headers.get("Authorization"), "workspace": self.headers.get("X-Workspace")})
             return self._json(200, {"items": [{"id": "d1", "name": "from-fake-catalog", "location": {"backendId": "lake", "path": "x.csv"}}], "total": 1})
+        if self.path == "/modules/lakehouse/api/warehouse":
+            # booth-lakehouse behind the gateway (ADR 0095 third amendment): "beta" has a warehouse,
+            # every other workspace gets the real endpoint's 404.
+            ws = self.headers.get("X-Workspace")
+            RECORDS["lakehouse"].append({"auth": self.headers.get("Authorization"), "workspace": ws})
+            if ws == "beta":
+                return self._json(200, {"workspace": ws, "backendId": "lake", "path": "warehouses/beta", "warehouseName": "beta"})
+            return self._json(404, {"detail": "this workspace has no lakehouse warehouse yet"})
         if self.path == "/healthz":
             return self._json(200, {})
         self._json(404, {})

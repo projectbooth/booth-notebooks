@@ -293,7 +293,12 @@ def test_booth_database_is_reachable_only_after_opting_in_and_the_hubs_own_datab
     assert not reaches(notebook, own), "a notebook pod reached the hub's own database"
 
     sh("helm", "--kube-context", f"kind-{CLUSTER}", "upgrade", "notebooks", str(ROOT / "charts" / "booth-notebooks"),
-       "--namespace", NS, "--reuse-values", "--set", f"boothDatabase.url={bdb}:5432", "--wait", "--timeout", "5m")
+       "--namespace", NS, "--reuse-values", "--set", f"boothDatabase.url={bdb}:5432",
+       # ADR 0095 third amendment: s3 mode too, checked at the next spawn (the beta test below).
+       "--set", "boothStorage.url=minio.storage.svc:9000",
+       "--set-json", 'singleuser.networkPolicy.egress.boothStorage.namespaceSelector={"kubernetes.io/metadata.name":"storage"}',
+       "--set-json", 'singleuser.networkPolicy.egress.boothStorage.podSelector={"app":"minio"}',
+       "--wait", "--timeout", "5m")
     wait_for(lambda: reaches(notebook, bdb), 60, "booth-database to become reachable after setting boothDatabase.url")
     assert not reaches(notebook, own), "after opting in, a notebook pod reached the hub's OWN database"
 
@@ -320,6 +325,22 @@ def test_the_same_person_in_another_workspace_gets_another_pod(base, core):
     # get a lease. The notebook must start anyway: database access is optional, never a precondition
     # (BoothSpawner.is_pod_running). This test is the regression guard for that.
     assert {"booth-token", "credential-sidecar"} <= {c["name"] for c in b["spec"]["containers"]}
+    # boothStorage.url is set too, and the stand-in lakehouse has a warehouse for beta: the hub looked it up
+    # as this notebook (one call, a minted workload token) and scoped an s3 sidecar to it. Same "never
+    # blocks" guarantee: no broker, so that sidecar can't get a lease either.
+    s3 = {c["name"]: c for c in b["spec"]["containers"]}["credential-sidecar-s3"]
+    scope = next(x.split("=", 1)[1] for x in s3["args"] if x.startswith("--scope="))
+    assert json.loads(scope) == {"backendId": "lake", "path": "warehouses/beta"}
+    lookups = [x for x in core_records()["lakehouse"] if x["workspace"] == "beta"]
+    assert lookups and all(x["auth"].startswith("Bearer wl-") for x in lookups)
+    nb_env = {e["name"]: e.get("value") for e in {c["name"]: c for c in b["spec"]["containers"]}["notebook"]["env"]}
+    assert nb_env["AWS_SHARED_CREDENTIALS_FILE"] == "/var/run/booth-s3/credentials"
+    assert nb_env["AWS_CONFIG_FILE"] == "/var/run/booth-s3/credentials.config"
+    # The sidecar's directory is mounted in the live notebook, read-only to user code.
+    out = subprocess.run(["kubectl", "--context", f"kind-{CLUSTER}", "-n", NS, "exec", b["metadata"]["name"], "-c", "notebook", "--",
+                          "sh", "-c", "test -d /var/run/booth-s3 && ! touch /var/run/booth-s3/x 2>/dev/null"], capture_output=True, text=True)
+    assert out.returncode == 0, f"the s3 credentials directory is missing or writable from the notebook: {out.stderr}"
+    assert "credential-sidecar-s3" not in {c["name"] for c in a["spec"]["containers"]}  # spawned before opting in
     assert a["metadata"]["name"] != b["metadata"]["name"]
     assert b["metadata"]["labels"]["booth.projectbooth.io/workspace"] == "beta"
     assert a["spec"]["volumes"][0]["persistentVolumeClaim"]["claimName"] != b["spec"]["volumes"][0]["persistentVolumeClaim"]["claimName"]

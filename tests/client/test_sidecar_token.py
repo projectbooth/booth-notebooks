@@ -91,6 +91,17 @@ def test_probe_mirrors_the_sidecars_healthz(status, ok):
         srv.shutdown()
 
 
+def test_probe_with_two_sidecars_is_ready_only_when_both_are():
+    up, down = _server(200), _server(503)
+    try:
+        u, d = (f"http://127.0.0.1:{s.server_address[1]}/healthz" for s in (up, down))
+        assert main(["probe", u, u]) == 0
+        assert main(["probe", u, d]) == 1 and main(["probe", d, u]) == 1
+    finally:
+        up.shutdown()
+        down.shutdown()
+
+
 def test_probe_when_nothing_is_listening_is_not_ready():
     assert probe("http://127.0.0.1:9/healthz", timeout=1) is False
 

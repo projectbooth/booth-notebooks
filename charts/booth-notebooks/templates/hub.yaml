@@ -147,13 +147,21 @@ spec:
               value: {{ .Values.hub.cullIdleSeconds | quote }}
             - name: BOOTH_NOTEBOOKS_SESSION_SECONDS
               value: {{ .Values.hub.sessionSeconds | quote }}
-            {{- if .Values.boothDatabase.url }}
+            {{- if or .Values.boothDatabase.url .Values.boothStorage.url }}
             {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" .Values.credentialSidecar.image) }}
             {{- fail "credentialSidecar.image must be pinned by digest (ghcr.io/projectbooth/credential-sidecar@sha256:...), never a tag (ADR 0095)" }}
             {{- end }}
+            {{- with .Values.boothDatabase.url }}
             # ADR 0095: same gate as the ADR 0092 egress rule; turns on the postgres credential sidecar.
             - name: BOOTH_NOTEBOOKS_BOOTH_DATABASE_URL
-              value: {{ .Values.boothDatabase.url | quote }}
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.boothStorage.url }}
+            # ADR 0095 third amendment: same gate as the boothStorage egress rule; turns on the s3 sidecar
+            # for pods whose workspace has a lakehouse warehouse (looked up at spawn).
+            - name: BOOTH_NOTEBOOKS_BOOTH_STORAGE_URL
+              value: {{ . | quote }}
+            {{- end }}
             - name: BOOTH_NOTEBOOKS_CREDENTIAL_SIDECAR_IMAGE
               value: {{ .Values.credentialSidecar.image | quote }}
             {{- with .Values.credentialSidecar.renewMarginSeconds }}

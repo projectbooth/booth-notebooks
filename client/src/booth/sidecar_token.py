@@ -7,7 +7,7 @@ the hub mints for this notebook server — so this loop writes exactly that toke
 it expires, to a file on a memory-backed volume shared only with the sidecar.
 
     python -m booth.sidecar_token write /var/run/booth-sidecar/token
-    python -m booth.sidecar_token probe http://127.0.0.1:5432/healthz
+    python -m booth.sidecar_token probe http://127.0.0.1:5432/healthz [http://127.0.0.1:9472/healthz ...]
 
 ``probe`` exists because the sidecar's ``/healthz`` listens on loopback only (by contract) and its image
 is distroless: the kubelet's own httpGet probe connects to the pod IP and can't reach a loopback
@@ -82,8 +82,8 @@ def main(argv: list[str]) -> int:
     if len(argv) == 2 and argv[0] == "write":
         write_loop(argv[1])
         return 0
-    if len(argv) == 2 and argv[0] == "probe":
-        return 0 if probe(argv[1]) else 1
+    if len(argv) >= 2 and argv[0] == "probe":  # one /healthz per sidecar; ready only when every one is
+        return 0 if all(probe(url) for url in argv[1:]) else 1
     print(__doc__, file=sys.stderr)
     return 2
 
