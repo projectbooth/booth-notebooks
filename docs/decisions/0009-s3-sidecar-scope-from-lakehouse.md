@@ -136,6 +136,12 @@ booth.s3.location()                          # Location(endpoint_url, region, ad
   nested `s3 = / addressing_style = …` form or as a flat key; until then each engine keeps its own default.
   With no config section (real AWS, where the sidecar writes none), the engines get nothing but their
   defaults.
+  - **ADR 0095 sixth amendment (2026-10-06).** booth-core will move `addressing_style` under `s3 =`
+    (the form botocore actually reads) and derive it from the lease's `pathStyle` as `path` or
+    `virtual`, replacing the flat key the current pin (`330a178`) writes. Both forms stay parsed on
+    purpose: the flat form for the current pin, the nested form for the next one. `virtual` already
+    maps to pyarrow `force_virtual_addressing` and DuckDB `URL_STYLE 'vhost'`, and both are
+    unit-tested, so the next repin needs no code change here.
 - **Errors:** `BoothError` when this pod has no s3 sidecar (with the reason: no warehouse yet, or
   `boothStorage.url` off; picked up at the next server start), and when the first lease hasn't been
   written yet.

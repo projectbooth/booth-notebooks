@@ -1,6 +1,6 @@
 # 0008: Adopting booth-core's credential sidecar (ADR 0095) — postgres shipped, s3 blocked
 
-Status: **`postgres` mode built and verified on a real cluster (2026-10-02)** against real booth-core
+Status: **`postgres` mode built and verified on a real cluster (2026-10-02); Finding 1 closed 2026-10-06 (below)** against real booth-core
 (`eb24bb3`, its broker and workload identity), a real bundled booth-database, and Keycloak. **`s3` mode not
 built**: three gaps, below, need decisions outside this repo. Two cross-module findings for the coordinator.
 
@@ -74,6 +74,37 @@ state. The kind suite keeps this as a regression test: the second workspace's no
 sidecar present, against a core with no broker, and must start.
 
 ## Finding 1 (booth-core contract vs booth-database): an open connection dies when its lease expires
+
+**Closed (2026-10-06): option A, ADR 0095 fifth amendment.** booth-database's reaper stays strict, and the
+contract was corrected instead. `contracts/credential-sidecar.md` now has a "Connection lifetime" section:
+a connection through the postgres sidecar **ends no later than its lease's expiry** (one hour today) and
+is **guaranteed at least the renewal margin**.
+
+- **Margin.** This chart leaves `credentialSidecar.renewMarginSeconds` unset, as ruled, so the sidecar's
+  default applies. That is about 60s of real guarantee on the current pin. booth-core is changing the
+  postgres default to half the lease's lifetime (about 30 minutes) and will re-publish, and that digest
+  is one more repin here.
+- **What this module does: `booth.database.engine()`.** It is a SQLAlchemy engine on `DATABASE_URL`
+  (psycopg 3, the driver the image ships) with `pool_pre_ping=True` and `pool_recycle=900`. The recycle
+  interval is 15 minutes, comfortably under the guarantee. A kernel that sits idle past a lease's expiry
+  reconnects on its next query, on a fresh lease, instead of failing it. Before this, the booth client
+  had no database code at all: `DATABASE_URL` was the whole interface. **Judgment call:** the ruling
+  asked for these settings "in the booth client's database path", so that path was added rather than
+  assumed.
+- **Lost by design:** a query or transaction that is **in flight when its lease expires is lost**, and
+  the caller gets the server's `AdminShutdown` error. Re-run it. Code that holds its own raw
+  `psycopg.connect()` open across an expiry gets the same error on its next use; only the pooled engine
+  recovers on its own.
+- **Measured** with the singleuser image against a real Postgres, ending a connection server-side with
+  `pg_terminate_backend`, which is what the reaper does at expiry:
+
+  | Case | Result |
+  |---|---|
+  | Plain engine, connection idle in the pool | next query fails with `AdminShutdown` |
+  | `booth.database.engine()`, connection idle in the pool | next query succeeds on a new backend (pid 61 → 63) |
+  | Query running when the connection is ended | lost with `AdminShutdown`; the same engine works again right after |
+
+The original finding, kept for the record:
 
 The sidecar contract says connections open on a prior credential "are left alone until they close
 naturally". But booth-database's reaper **terminates sessions when their lease expires**, by design
