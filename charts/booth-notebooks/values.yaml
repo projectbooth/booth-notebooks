@@ -70,10 +70,11 @@ boothStorage:
   url: ""
 
 # ADR 0095 / contracts/credential-sidecar.md: booth-core's sidecar image, PINNED BY DIGEST (the chart
-# refuses a tag). Published by booth-core's "Publish credential-sidecar" workflow; this is ff7572b
-# (run 37353562693: writes <file> and <file>.config, ADR 0095 third amendment). Used only when boothDatabase.url or boothStorage.url is set.
+# refuses a tag). Published by booth-core's "Publish credential-sidecar" workflow; this is 330a178
+# (run 37378106842: writes <file> and <file>.config with endpoint_url, region and addressing_style = path;
+# ADR 0095 third and fourth amendments). Used only when boothDatabase.url or boothStorage.url is set.
 credentialSidecar:
-  image: ghcr.io/projectbooth/credential-sidecar@sha256:a3a0f90bf90d1f6c054a81d03f3b3b8ec4d2fbf768c5e6f1e280f131576629d9
+  image: ghcr.io/projectbooth/credential-sidecar@sha256:decd3031f8deeae19a0213f2eef63a7480b1bfce2829834ebb483d16a8875865
   # Renewal knobs (contract: RENEW_MARGIN_SECONDS / RENEW_INTERVAL_SECONDS). Empty = the sidecar's defaults.
   renewMarginSeconds: ""
   renewIntervalSeconds: ""

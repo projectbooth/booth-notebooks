@@ -1,12 +1,14 @@
 # 0009: The s3 credential sidecar, scoped by a spawn-time booth-lakehouse lookup (ADR 0095, third amendment)
 
 Status: **scope resolution built and tested (2026-10-05)** with unit tests against a stand-in core and
-lakehouse, and with chart contract tests. A kind step against the in-cluster stand-in is written; it runs
-on CI's Integration workflow, because this host is too short of memory for a local kind run. The chart
-now pins booth-core's re-published sidecar, `ff7572b`
-(`sha256:a3a0f90b…`, run 37353562693), which writes `<path>` and `<path>.config`. **Finding 3, below:
-the default kernel's engines don't read the endpoint from that file**, so s3 access from a notebook isn't
-yet usable without an explicit endpoint.
+lakehouse, with chart contract tests, and with a kind step against in-cluster stand-ins. The kind step
+runs on CI's Integration workflow, because this host is too short of memory for a local kind run. The chart
+now pins booth-core `330a178` (`sha256:decd3031…`, run 37378106842). That image writes `<path>` and
+`<path>.config`, and the config file carries `endpoint_url`, `region` and `addressing_style = path`
+(the third and fourth amendments). **Finding 3, below:** the default kernel's engines don't read the
+endpoint from that file. That is answered by the `booth.s3` helper, which also has DuckDB working end to
+end with this pin (measured, below). The `ff7572b` measurements further down are kept as the record of
+what the earlier image did.
 
 This resolves gaps 2 and 3 in [0008](0008-credential-sidecar-adoption.md) as Architecture ruled. Gap 1
 (endpoint and bucket) is booth-core's fix. Findings 1 and 2 in 0008 are still open.
@@ -65,9 +67,10 @@ default distroless uid (65532), the notebook (uid 1000) could not read them. **W
 sidecar runs as uid 1000/gid 100, the notebook's own user, which is the one other reader. It is still
 non-root, has a read-only root, and drops all capabilities. The postgres sidecar stays at 65532.
 
-This works, but it couples the sidecar's uid to the consumer's. If booth-core would rather write `0640`
-and let charts share a group (fsGroup), that would remove the coupling. Worth a line in the contract
-either way, since booth-pipeline's runner will meet the same thing.
+This works, but it couples the sidecar's uid to the consumer's. I asked whether booth-core would rather
+write `0640` and let charts share a group (fsGroup). **Ruled (fourth amendment): no.** Running the s3
+sidecar at the consumer's uid is now the standing requirement, stated in
+`contracts/credential-sidecar.md`.
 
 ## Measured against the real sidecar (`ff7572b`), container-level
 
@@ -151,8 +154,19 @@ mounted, running as uid 1000 with only the two `AWS_*` variables set:
 file was atomically replaced with valid keys, as the sidecar does, **the same objects** worked from their
 very next call (0s). User code doesn't need to re-create either after a renewal.
 
-DuckDB end to end therefore waits on booth-core's `addressing_style` digest, tracked the same way as the
-endpoint one. Repinning `credentialSidecar.image` is the only change needed here.
+**Repinned to `330a178` (`sha256:decd3031…`).** booth-core writes the flat `addressing_style = path`
+for every self-hosted lease. Re-measured the same way with the file exactly as written, no hand edits:
+`location()` reads `addressing_style='path'`, pyarrow writes and reads, and DuckDB's secret has
+`url_style=path` and **writes and reads MinIO**.
+
+The kind suite now covers this in-cluster:
+- a MinIO stand-in (`fixtures/minio.yaml`), labelled to match the `boothStorage` egress selectors;
+- an s3-only `POST /api/credentials` on the stand-in core. Postgres is still refused, so the
+  "starts anyway" guard holds.
+
+The beta notebook waits for the pinned sidecar's first lease, then runs DuckDB through `booth.s3`. It
+asserts `url_style=path`, the in-cluster endpoint, and a write and read of MinIO through the egress rule.
+It also asserts the lease request's scope, workspace and `read` access.
 
 ## Tests
 
@@ -174,7 +188,8 @@ endpoint one. Repinning `credentialSidecar.image` is the only change needed here
     `/modules/lakehouse/api/warehouse` (a warehouse for `beta`, 404 otherwise).
   - The beta spawn asserts the s3 sidecar's scope, the lookup made with a minted `wl-` token, the AWS env,
     and that the directory is present and not writable from the live notebook.
-  - The notebook must start with no broker present: the same never-blocks guard as for postgres.
-- **Deferred until booth-core's digest lands:** a real-stack test (the real broker and real booth-storage
-  MinIO, the s3 sidecar writing both files, and DuckDB or PyIceberg in a kernel reading through them).
-  Then the pin in `values.yaml` moves to the new digest.
+  - The notebook must start while the postgres sidecar is refused: the same never-blocks guard as before.
+  - With the pinned sidecar leasing from an s3-only stand-in broker, DuckDB in the live notebook writes and
+    reads an in-cluster MinIO through `booth.s3` (`url_style=path`), via the boothStorage egress rule.
+- **Not yet run:** a real-stack test with booth-core's real broker, real booth-storage and real
+  booth-lakehouse. The kind step uses stand-ins for all three; the sidecar image and MinIO are real.

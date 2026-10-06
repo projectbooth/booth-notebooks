@@ -315,6 +315,12 @@ def test_servers_survive_a_hub_restart(base, core):
 
 
 def test_the_same_person_in_another_workspace_gets_another_pod(base, core):
+    # The stand-in S3 backend the stand-in broker leases (s3 kind only), labelled to match boothStorage's selectors.
+    kubectl("create", "namespace", "storage", check=False)
+    kubectl("apply", "-n", "storage", "-f", str(FIX / "minio.yaml"))
+    kubectl("-n", "storage", "rollout", "status", "deployment/minio", "--timeout=180s")
+    kubectl("-n", "storage", "exec", "deploy/minio", "--", "sh", "-c",
+            "mc alias set l http://127.0.0.1:9000 kindtest kindtest-secret >/dev/null && mc mb -p l/lake")
     c = core.browser(base, "beta")
     r = c.get("/hub/spawn")
     assert r.status_code == 200, f"login/spawn refused ({r.status_code}): {r.text[:300]}"
@@ -340,6 +346,29 @@ def test_the_same_person_in_another_workspace_gets_another_pod(base, core):
     out = subprocess.run(["kubectl", "--context", f"kind-{CLUSTER}", "-n", NS, "exec", b["metadata"]["name"], "-c", "notebook", "--",
                           "sh", "-c", "test -d /var/run/booth-s3 && ! touch /var/run/booth-s3/x 2>/dev/null"], capture_output=True, text=True)
     assert out.returncode == 0, f"the s3 credentials directory is missing or writable from the notebook: {out.stderr}"
+    # End to end through the pinned sidecar image: it leases from the stand-in broker and writes both files,
+    # and booth.s3 hands DuckDB the location (URL_STYLE 'path' from the file's addressing_style, ADR 0095
+    # fourth amendment), so a kernel writes and reads the in-cluster MinIO through the boothStorage egress rule.
+    def nb(code: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["kubectl", "--context", f"kind-{CLUSTER}", "-n", NS, "exec", b["metadata"]["name"], "-c", "notebook", "--",
+                               "python", "-c", code], capture_output=True, text=True, timeout=300)
+
+    wait_for(lambda: nb("import os,sys;sys.exit(0 if os.path.exists('/var/run/booth-s3/credentials.config') else 1)").returncode == 0,
+             120, "the s3 sidecar's first lease (credentials + .config)")
+    out = nb(
+        "import duckdb, booth.s3\n"
+        "con = duckdb.connect(); booth.s3.duckdb_secret(con)\n"
+        "s = con.execute(\"SELECT secret_string FROM duckdb_secrets() WHERE name='booth_s3'\").fetchone()[0]\n"
+        "print([p for p in s.split(';') if p.startswith(('url_style=', 'endpoint='))])\n"
+        "con.execute(\"COPY (SELECT 42 AS y) TO 's3://lake/warehouses/beta/kind.parquet'\")\n"
+        "print('READ', con.execute(\"SELECT y FROM 's3://lake/warehouses/beta/kind.parquet'\").fetchone()[0])\n"
+    )
+    assert out.returncode == 0, f"DuckDB through booth.s3 failed:\n{out.stdout}\n{out.stderr[-1500:]}"
+    assert "'url_style=path'" in out.stdout and "'endpoint=minio.storage.svc.cluster.local:9000'" in out.stdout, out.stdout
+    assert "READ 42" in out.stdout, out.stdout
+    lease = [x for x in core_records()["credentials"] if x["kind"] == "s3"]
+    assert lease and lease[0]["scope"] == {"backendId": "lake", "path": "warehouses/beta"} and lease[0]["workspace"] == "beta"
+    assert lease[0]["access"] == "read"  # beta is this person's viewer workspace
     assert "credential-sidecar-s3" not in {c["name"] for c in a["spec"]["containers"]}  # spawned before opting in
     assert a["metadata"]["name"] != b["metadata"]["name"]
     assert b["metadata"]["labels"]["booth.projectbooth.io/workspace"] == "beta"
