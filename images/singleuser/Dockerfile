@@ -39,6 +39,11 @@ COPY images/singleuser/booth_server_config.py /tmp/booth_server_config.py
 RUN cat /tmp/booth_server_config.py >> /etc/jupyter/jupyter_server_config.py && rm /tmp/booth_server_config.py
 USER 1000
 
+# JupyterLab setting defaults for every user (JupyterLab's own overrides.json mechanism). Never fetch the
+# Jupyter news feed or check for updates, and so never show the first-launch "get notified about official
+# Jupyter news?" prompt: the pod can't usefully reach it, and its version is the image's choice, not the user's.
+COPY --chown=1000:100 images/singleuser/overrides.json /opt/conda/share/jupyter/lab/settings/overrides.json
+
 # ADR 0075: JupyterLab follows the shell's dark/light toggle live, over a same-origin postMessage handshake.
 # A prebuilt federated extension: JupyterLab discovers it from this directory, no rebuild of JupyterLab needed.
 COPY --from=theme-sync --chown=1000:100 /tmp/theme-sync/labextension /opt/conda/share/jupyter/labextensions/@projectbooth/jupyterlab-theme-sync
