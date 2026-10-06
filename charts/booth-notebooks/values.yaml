@@ -70,12 +70,16 @@ boothStorage:
   url: ""
 
 # ADR 0095 / contracts/credential-sidecar.md: booth-core's sidecar image, PINNED BY DIGEST (the chart
-# refuses a tag). Published by booth-core's "Publish credential-sidecar" workflow; this is 330a178
-# (run 37378106842: writes <file> and <file>.config with endpoint_url, region and addressing_style = path;
-# ADR 0095 third and fourth amendments). Used only when boothDatabase.url or boothStorage.url is set.
+# refuses a tag). Published by booth-core's "Publish credential-sidecar" workflow; this is 8f0c6b4
+# (run 37464892322). Postgres mode renews at half the lease's lifetime unless a margin is set. s3 mode
+# writes <file> and <file>.config with endpoint_url, region and, nested under "s3 =", addressing_style
+# taken from the lease's pathStyle (ADR 0095 third to sixth amendments). Used only when
+# boothDatabase.url or boothStorage.url is set.
 credentialSidecar:
-  image: ghcr.io/projectbooth/credential-sidecar@sha256:decd3031f8deeae19a0213f2eef63a7480b1bfce2829834ebb483d16a8875865
+  image: ghcr.io/projectbooth/credential-sidecar@sha256:6a0a795efd27f165e0714beb163d91f5c2feff55cfdc6f287aee979ae02cce14
   # Renewal knobs (contract: RENEW_MARGIN_SECONDS / RENEW_INTERVAL_SECONDS). Empty = the sidecar's defaults.
+  # Leave renewMarginSeconds empty: setting it replaces postgres mode's half-lease renewal with a fixed
+  # margin, which shortens how long a connection is guaranteed to live (ADR 0095 fifth amendment).
   renewMarginSeconds: ""
   renewIntervalSeconds: ""
 

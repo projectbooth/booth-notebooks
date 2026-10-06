@@ -43,7 +43,7 @@ def test_engine_checks_connections_and_recycles_well_under_the_lease_guarantee(c
     ((url, kw),) = created
     assert url.startswith("postgresql+psycopg://localhost:5432/")
     assert kw == {"pool_pre_ping": True, "pool_recycle": 900}
-    assert db.RECYCLE_SECONDS < 30 * 60  # booth-core's postgres renewal margin default: half a 1h lease
+    assert db.RECYCLE_SECONDS < 30 * 60  # the guarantee: the sidecar renews at half a lease, ~30 min of a default 1h lease
 
 
 def test_caller_options_win(created):

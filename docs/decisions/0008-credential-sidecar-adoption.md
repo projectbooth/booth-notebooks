@@ -9,8 +9,9 @@ built**: three gaps, below, need decisions outside this repo. Two cross-module f
 Gated by ADR 0092's existing `boothDatabase.url` (no new gate, per the contract). When it is set, every
 notebook pod gets:
 
-- **`credential-sidecar`**: `ghcr.io/projectbooth/credential-sidecar@sha256:05e96332…` (the digest `eb24bb3`'s
-  publish run recorded; the chart and the hub config both refuse a tag). `--kind=postgres
+- **`credential-sidecar`**: first pinned at `ghcr.io/projectbooth/credential-sidecar@sha256:05e96332…`
+  (the digest `eb24bb3`'s publish run recorded). The current pin is `8f0c6b4` (`sha256:6a0a795e…`), see
+  Finding 1. The chart and the hub config both refuse a tag. `--kind=postgres
   --listen=127.0.0.1:5432 --scope={"workspace":<ws>} --token-file=…`. Non-root (65532), read-only root,
   capabilities dropped, small limits.
 - **`booth-token`**: a tiny loop (`python -m booth.sidecar_token write …`, the notebook image) that keeps
@@ -80,17 +81,26 @@ contract was corrected instead. `contracts/credential-sidecar.md` now has a "Con
 a connection through the postgres sidecar **ends no later than its lease's expiry** (one hour today) and
 is **guaranteed at least the renewal margin**.
 
-- **Margin.** This chart leaves `credentialSidecar.renewMarginSeconds` unset, as ruled, so the sidecar's
-  default applies. That is about 60s of real guarantee on the current pin. booth-core is changing the
-  postgres default to half the lease's lifetime (about 30 minutes) and will re-publish, and that digest
-  is one more repin here.
+- **The guarantee on the current pin: about half a lease (roughly 30 minutes).** The chart pins booth-core
+  `8f0c6b4` (`sha256:6a0a795e…`, run 37464892322). Unless a margin is set explicitly, that image's
+  postgres mode renews once half of a lease's own lifetime has passed. A connection opened just before
+  a renewal stays on the old lease until it expires, so every connection gets at least half a lease:
+  about 30 minutes with booth-database's default one-hour lease. Before this pin it was a fixed 60s
+  margin, which gave a real guarantee of about a minute.
+- **Margin left unset, as ruled.** `credentialSidecar.renewMarginSeconds` stays empty. Setting it would
+  replace half-lease renewal with a fixed margin and shorten the guarantee; the values file says so.
 - **What this module does: `booth.database.engine()`.** It is a SQLAlchemy engine on `DATABASE_URL`
-  (psycopg 3, the driver the image ships) with `pool_pre_ping=True` and `pool_recycle=900`. The recycle
-  interval is 15 minutes, comfortably under the guarantee. A kernel that sits idle past a lease's expiry
-  reconnects on its next query, on a fresh lease, instead of failing it. Before this, the booth client
-  had no database code at all: `DATABASE_URL` was the whole interface. **Judgment call:** the ruling
-  asked for these settings "in the booth client's database path", so that path was added rather than
-  assumed.
+  (psycopg 3, the driver the image ships) with `pool_pre_ping=True` and `pool_recycle=900`.
+  - The recycle is 15 minutes, half the guarantee with the default one-hour lease. So with default
+    leases a pooled connection is retired before the reaper could end it.
+  - Pre-ping checks each pooled connection before reuse. That covers a deployment that sets shorter
+    leases, where half a lease can be under 15 minutes.
+  - Either way, a kernel that sits idle past a lease's expiry reconnects on its next query, on a fresh
+    lease, instead of failing it.
+
+  Before this, the booth client had no database code at all: `DATABASE_URL` was the whole interface.
+  **Judgment call:** the ruling asked for these settings "in the booth client's database path", so that
+  path was added rather than assumed. That makes `booth.database.engine()` new public API.
 - **Lost by design:** a query or transaction that is **in flight when its lease expires is lost**, and
   the caller gets the server's `AdminShutdown` error. Re-run it. Code that holds its own raw
   `psycopg.connect()` open across an expiry gets the same error on its next use; only the pooled engine

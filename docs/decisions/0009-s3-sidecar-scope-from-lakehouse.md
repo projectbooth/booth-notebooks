@@ -3,12 +3,12 @@
 Status: **scope resolution built and tested (2026-10-05)** with unit tests against a stand-in core and
 lakehouse, with chart contract tests, and with a kind step against in-cluster stand-ins. The kind step
 runs on CI's Integration workflow, because this host is too short of memory for a local kind run. The chart
-now pins booth-core `330a178` (`sha256:decd3031…`, run 37378106842). That image writes `<path>` and
-`<path>.config`, and the config file carries `endpoint_url`, `region` and `addressing_style = path`
-(the third and fourth amendments). **Finding 3, below:** the default kernel's engines don't read the
-endpoint from that file. That is answered by the `booth.s3` helper, which also has DuckDB working end to
-end with this pin (measured, below). The `ff7572b` measurements further down are kept as the record of
-what the earlier image did.
+now pins booth-core `8f0c6b4` (`sha256:6a0a795e…`, run 37464892322). That image writes `<path>` and
+`<path>.config`. The config file carries `endpoint_url`, `region`, and `addressing_style` nested under
+`s3 =`, derived from the lease's `pathStyle` (the third, fourth and sixth amendments). **Finding 3,
+below:** the default kernel's engines don't read the endpoint from that file. That is answered by the
+`booth.s3` helper, which also has DuckDB working end to end with this pin (measured, below). The
+`ff7572b` and `330a178` measurements further down are kept as the record of what those images did.
 
 This resolves gaps 2 and 3 in [0008](0008-credential-sidecar-adoption.md) as Architecture ruled. Gap 1
 (endpoint and bucket) is booth-core's fix. Findings 1 and 2 in 0008 are still open.
@@ -136,12 +136,11 @@ booth.s3.location()                          # Location(endpoint_url, region, ad
   nested `s3 = / addressing_style = …` form or as a flat key; until then each engine keeps its own default.
   With no config section (real AWS, where the sidecar writes none), the engines get nothing but their
   defaults.
-  - **ADR 0095 sixth amendment (2026-10-06).** booth-core will move `addressing_style` under `s3 =`
-    (the form botocore actually reads) and derive it from the lease's `pathStyle` as `path` or
-    `virtual`, replacing the flat key the current pin (`330a178`) writes. Both forms stay parsed on
-    purpose: the flat form for the current pin, the nested form for the next one. `virtual` already
-    maps to pyarrow `force_virtual_addressing` and DuckDB `URL_STYLE 'vhost'`, and both are
-    unit-tested, so the next repin needs no code change here.
+  - **ADR 0095 sixth amendment (2026-10-06), shipped in the current pin `8f0c6b4`.** `addressing_style`
+    now sits under `s3 =` (the form botocore actually reads) and is derived from the lease's
+    `pathStyle` as `path` or `virtual`, replacing the flat key `330a178` wrote. Both forms stay parsed,
+    as ruled. `virtual` maps to pyarrow `force_virtual_addressing` and DuckDB `URL_STYLE 'vhost'`, and
+    both are unit-tested. The repin needed no code change here.
 - **Errors:** `BoothError` when this pod has no s3 sidecar (with the reason: no warehouse yet, or
   `boothStorage.url` off; picked up at the next server start), and when the first lease hasn't been
   written yet.
@@ -164,6 +163,14 @@ very next call (0s). User code doesn't need to re-create either after a renewal.
 for every self-hosted lease. Re-measured the same way with the file exactly as written, no hand edits:
 `location()` reads `addressing_style='path'`, pyarrow writes and reads, and DuckDB's secret has
 `url_style=path` and **writes and reads MinIO**.
+
+**Repinned to `8f0c6b4` (`sha256:6a0a795e…`), the current pin.** Re-measured the same way, with no
+hand edits:
+- A lease with `pathStyle: true` gives a config file of
+  `[default] endpoint_url = …, region = …, s3 = / addressing_style = path`. `location()` reads `'path'`;
+  pyarrow writes and reads; DuckDB has `url_style=path` and **writes and reads MinIO**.
+- A lease with `pathStyle: false` gives the nested `addressing_style = virtual`, which `location()`
+  reads as `'virtual'`.
 
 The kind suite now covers this in-cluster:
 - a MinIO stand-in (`fixtures/minio.yaml`), labelled to match the `boothStorage` egress selectors;

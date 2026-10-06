@@ -9,12 +9,13 @@ client works with it directly. Prefer this engine, though, for anything that kee
     pd.read_sql("SELECT now()", engine)
 
 **Connection lifetime (ADR 0095 fifth amendment).** A connection through the sidecar ends no later than
-the lease it was opened on expires: booth-database terminates a lease's sessions at expiry. Each
-connection is guaranteed at least the sidecar's renewal margin. The engine therefore checks a pooled
-connection before reusing it (``pool_pre_ping``) and retires connections well before the guarantee
-(``pool_recycle``), so a kernel left open all afternoon reconnects quietly on a fresh lease instead of
-failing its next query. A query or transaction that is *running* when its lease expires is still lost:
-re-run it.
+the lease it was opened on expires: booth-database terminates a lease's sessions at expiry. The sidecar
+renews once half a lease has passed, so every connection is guaranteed at least half a lease: about 30
+minutes with booth-database's default one-hour lease. The engine retires pooled connections after 15
+minutes (``pool_recycle``), inside that guarantee with the default lease. It also checks a pooled
+connection before reusing it (``pool_pre_ping``), which covers a deployment with shorter leases. Either
+way, a kernel left open all afternoon reconnects quietly on a fresh lease instead of failing its next
+query. A query or transaction that is *running* when its lease expires is still lost: re-run it.
 """
 
 from __future__ import annotations
@@ -25,7 +26,8 @@ from . import BoothError
 
 __all__ = ["RECYCLE_SECONDS", "url", "engine"]
 
-# Comfortably under the guaranteed lifetime (the renewal margin; ~30 min with booth-core's postgres default).
+# Half the guaranteed lifetime with booth-database's default one-hour lease (the sidecar renews at half a
+# lease, so a connection lives at least ~30 min). With shorter leases, pool_pre_ping catches the rest.
 RECYCLE_SECONDS = 15 * 60
 
 NOT_ENABLED = (
