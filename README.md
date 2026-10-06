@@ -50,6 +50,7 @@ notebook pod ──(Bearer <10-min workload token>, X-Workspace)──▶ booth-
   booth.platform_token()                        # this notebook's platform token, for other clients (ADR 0084)
   booth.s3.pyarrow_filesystem()                 # object storage via the credential sidecar (ADR 0095)
   booth.s3.duckdb_secret(duckdb.connect())      # the same, for DuckDB's s3:// paths
+  booth.database.engine()                       # SQLAlchemy on DATABASE_URL, reconnects after a lease expires (ADR 0095)
   ```
 
 ## The default kernel environment
@@ -132,6 +133,6 @@ protection), `.github/workflows/integration.yml` (layer 3, merge to `main` and n
 - [0004](docs/decisions/0004-adr-0069-adoption-and-real-stack-findings.md): ADR 0069 adoption, real-stack verification, two findings (both since fixed in core/design).
 - [0005](docs/decisions/0005-third-pass-real-stack-verification.md): third pass: fixes verified, the notebook-session-lifetime bug fixed, a kernel reading real registered data.
 - [0006](docs/decisions/0006-adr-0075-theme-sync-extension.md): the ADR 0075 theme-sync JupyterLab extension: build, and end-to-end verification through the real shell.
-- [0008](docs/decisions/0008-credential-sidecar-adoption.md): booth-core's credential sidecar (ADR 0095): postgres mode shipped and verified on a real cluster; s3 mode blocked; two cross-module findings.
+- [0008](docs/decisions/0008-credential-sidecar-adoption.md): booth-core's credential sidecar (ADR 0095): postgres mode shipped and verified on a real cluster; Finding 1 closed by the fifth amendment (`booth.database.engine()` survives lease expiry; in-flight work is lost); Finding 2 open.
 - [0007](docs/decisions/0007-lakehouse-client-support.md): `booth.platform_token()` and reading Iceberg datasets through `booth_lakehouse`.
 - [0009](docs/decisions/0009-s3-sidecar-scope-from-lakehouse.md): the s3 sidecar (ADR 0095 third amendment): its scope from a spawn-time booth-lakehouse lookup (a new runtime coupling); measured against the real re-published sidecar; Finding 3 (kernel engines ignore the config file's endpoint), answered by the `booth.s3` helper.
