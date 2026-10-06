@@ -159,14 +159,20 @@ def configure(c, env: Mapping[str, str] | None = None) -> None:  # noqa: PLR0915
     s.gateway_url = gateway
     # ADR 0095: the postgres credential sidecar, behind the same boothDatabase.url gate as the ADR 0092
     # egress rule. It needs core (the broker) and a digest-pinned image; never a floating tag.
+    # The third amendment adds s3 mode behind boothStorage.url (booth-pipeline's gate and egress rule);
+    # its scope is the workspace's lakehouse warehouse, which the spawner looks up as the notebook.
     booth_database_url = env.get("BOOTH_NOTEBOOKS_BOOTH_DATABASE_URL", "")
-    if booth_database_url:
+    booth_storage_url = env.get("BOOTH_NOTEBOOKS_BOOTH_STORAGE_URL", "")
+    for gate, on in (("boothDatabase.url", booth_database_url), ("boothStorage.url", booth_storage_url)):
+        if on and not core_url:
+            raise ConfigError(f"{gate} needs BOOTH_CORE_URL: the credential sidecar calls booth-core's broker")
+    if booth_database_url or booth_storage_url:
         image = env.get("BOOTH_NOTEBOOKS_CREDENTIAL_SIDECAR_IMAGE", "")
         if not re.search(r"@sha256:[0-9a-f]{64}$", image):
             raise ConfigError("BOOTH_NOTEBOOKS_CREDENTIAL_SIDECAR_IMAGE must be pinned by digest (…/credential-sidecar@sha256:<64 hex>), never a tag")
-        if not core_url:
-            raise ConfigError("boothDatabase.url needs BOOTH_CORE_URL: the credential sidecar calls booth-core's broker")
         s.booth_database_url = booth_database_url
+        s.booth_storage_url = booth_storage_url
+        s.workload_minter = minter
         s.core_url = core_url
         s.credential_sidecar_image = image
         s.sidecar_renew_margin_seconds = _int(env, "BOOTH_NOTEBOOKS_SIDECAR_RENEW_MARGIN_SECONDS", 0, 0)

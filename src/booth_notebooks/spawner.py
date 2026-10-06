@@ -19,9 +19,11 @@ import hashlib
 import json
 
 from kubespawner import KubeSpawner
-from traitlets import Integer, Unicode
+from traitlets import Any, Integer, Unicode
 
 from .identity import EDITOR, OWNER, workspace_of
+from .warehouse import WarehouseUnavailable, warehouse_scope
+from .workload import MintRefused, MintUnavailable, subject_for
 
 WORKSPACE_LABEL = "booth.projectbooth.io/workspace"
 
@@ -30,6 +32,12 @@ SIDECAR_LISTEN = "127.0.0.1:5432"
 SIDECAR_DIR = "/var/run/booth-sidecar"  # memory-backed, shared by the token helper and the sidecar only
 SIDECAR_TOKEN_FILE = f"{SIDECAR_DIR}/token"
 SIDECAR_VOLUME = "booth-sidecar"
+# s3 mode (third amendment): the sidecar writes <file> (keys) and <file>.config (endpoint, region) into a
+# volume the notebook mounts read-only. Its /healthz gets a port of its own, off the much-used 8080.
+S3_DIR = "/var/run/booth-s3"
+S3_CREDENTIALS_FILE = f"{S3_DIR}/credentials"
+S3_VOLUME = "booth-s3"
+S3_HEALTH_LISTEN = "127.0.0.1:9472"
 _LOOPBACK_URL_PREFIXES = ("postgresql://localhost:", "postgresql://127.0.0.1:")
 
 
@@ -54,7 +62,10 @@ FORBIDDEN_SECRETS = frozenset(
     }
 )
 # Env var name fragments that mean "a hub-side secret leaked into the pod".
-_FORBIDDEN_ENV_FRAGMENTS = ("DSN", "DATABASE", "MINT", "CRYPT_KEY", "PROXY_AUTH", "COOKIE_SECRET")
+_FORBIDDEN_ENV_FRAGMENTS = (
+    "DSN", "DATABASE", "MINT", "CRYPT_KEY", "PROXY_AUTH", "COOKIE_SECRET",
+    "SECRET_ACCESS_KEY", "SESSION_TOKEN",  # s3 keys only ever live in the sidecar's file, never in env
+)
 
 
 class UnsafePodSpec(Exception):
@@ -108,9 +119,10 @@ def check_pod(pod, extra_forbidden: frozenset[str] = frozenset()) -> None:
                 raise UnsafePodSpec(f"notebook pods must not receive hub-side setting {e.get('name')}")
         args = [str(a) for a in (c.get("args") or [])]
         if any(a.startswith("--kind=") for a in args):
-            listen = next((a.split("=", 1)[1] for a in args if a.startswith("--listen=")), SIDECAR_LISTEN)
-            if not listen.startswith(("127.0.0.1:", "localhost:", "unix://")):
-                raise UnsafePodSpec(f"the credential sidecar must listen on loopback only, not {listen}")
+            for flag, default in (("--listen=", SIDECAR_LISTEN), ("--health-listen=", "127.0.0.1:8080")):
+                listen = next((a.split("=", 1)[1] for a in args if a.startswith(flag)), default)
+                if not listen.startswith(("127.0.0.1:", "localhost:", "unix://")):
+                    raise UnsafePodSpec(f"the credential sidecar must listen on loopback only, not {listen}")
         for ef in c.get("envFrom") or []:
             ref = (ef.get("secretRef") or {}).get("name")
             if ref in forbidden:
@@ -138,9 +150,44 @@ class BoothSpawner(KubeSpawner):
     sidecar_renew_margin_seconds = Integer(0, config=True, help="0 = the sidecar's own default.")
     sidecar_renew_interval_seconds = Integer(0, config=True, help="0 = the sidecar's own default.")
 
+    # ADR 0095 third amendment: s3 mode, gated by boothStorage.url (the same value as its egress rule).
+    # Its scope is the workspace's lakehouse warehouse, looked up at spawn (warehouse.py).
+    booth_storage_url = Unicode("", config=True, help="Non-empty enables the s3 credential sidecar.")
+    workload_minter = Any(None, config=True, help="The hub's WorkloadMinter: mints the notebook's own token for the warehouse lookup.")
+    lakehouse_transport = Any(None, help="httpx transport for the warehouse lookup (tests).")
+
+    _s3_scope: dict | None = None  # set per spawn by get_pod_manifest, read by get_env
+
     @property
     def database_sidecar_enabled(self) -> bool:
         return bool(self.booth_database_url)
+
+    async def resolve_s3_scope(self) -> dict | None:
+        """The s3 sidecar's ``--scope``, or None for no s3 sidecar in this pod.
+
+        One ``GET /api/warehouse`` to booth-lakehouse as the notebook itself: the token is minted exactly as
+        ``PlatformTokenHandler`` mints the kernel's (subject ``notebook:<hub user>``, owner = the person),
+        used for this one call and dropped. 404 (no warehouse yet, or no booth-lakehouse installed: core's
+        gateway 404s an unknown module) means no sidecar. So does any failure, logged: like the database
+        path, object storage is an extra and never stops a notebook from starting.
+        """
+        if not self.booth_storage_url:
+            return None
+        ws = workspace_of(self.user.name)
+        state = await self.user.get_auth_state() or {}
+        owner = state.get("sub", "")
+        if self.workload_minter is None or not owner or state.get("workspace") != ws:
+            self.log.warning("no s3 sidecar for %s: no workload identity to look up the warehouse with", self.user.name)
+            return None
+        try:
+            tok = await self.workload_minter.mint(ws, subject_for(self.user.name), owner)
+            scope = await warehouse_scope(self.core_url, ws, tok.token, transport=self.lakehouse_transport)
+        except (MintRefused, MintUnavailable, WarehouseUnavailable) as e:
+            self.log.warning("no s3 sidecar for %s: %s", self.user.name, e)
+            return None
+        if scope is None:
+            self.log.info("no s3 sidecar for %s: workspace %s has no lakehouse warehouse", self.user.name, ws)
+        return scope
 
     def get_env(self):
         env = super().get_env()
@@ -153,10 +200,14 @@ class BoothSpawner(KubeSpawner):
             # Read like any other DATABASE_URL: no host, no credential, no platform knowledge in it. The
             # sidecar on loopback holds all of that (ADR 0095).
             env["DATABASE_URL"] = f"postgresql://localhost:5432/{workspace_database(workspace_of(self.user.name))}"
+        if self._s3_scope is not None:
+            # The standard AWS variables: boto3, s3fs, PyArrow and DuckDB's credential chain all read them.
+            env["AWS_SHARED_CREDENTIALS_FILE"] = S3_CREDENTIALS_FILE
+            env["AWS_CONFIG_FILE"] = S3_CREDENTIALS_FILE + ".config"
         return env
 
-    def database_sidecar_containers(self, env: dict, access: str) -> list[dict]:
-        """The token helper and the postgres-mode credential sidecar (contracts/credential-sidecar.md)."""
+    def sidecar_containers(self, env: dict, access: str, s3_scope: dict | None) -> list[dict]:
+        """The token helper plus one credential sidecar per enabled kind (contracts/credential-sidecar.md)."""
         ws = workspace_of(self.user.name)
         locked = {
             "runAsNonRoot": True,
@@ -170,46 +221,70 @@ class BoothSpawner(KubeSpawner):
             sidecar_env.append({"name": "RENEW_MARGIN_SECONDS", "value": str(self.sidecar_renew_margin_seconds)})
         if self.sidecar_renew_interval_seconds:
             sidecar_env.append({"name": "RENEW_INTERVAL_SECONDS", "value": str(self.sidecar_renew_interval_seconds)})
-        return [
-            {
-                # Keeps the notebook's own platform token (booth.platform_token(), ADR 0056) fresh in a
-                # file for the sidecar, and runs the sidecar's readiness check: its /healthz is
-                # loopback-only and its image distroless, so neither a kubelet httpGet nor an exec in its
-                # own container can reach it. This container shares the pod's network namespace.
-                "name": "booth-token",
-                "image": self.image,
-                "imagePullPolicy": self.image_pull_policy,
-                "command": ["python", "-m", "booth.sidecar_token", "write", SIDECAR_TOKEN_FILE],
-                "env": [{"name": k, "value": _literal(str(env[k]))} for k in token_env if k in env],
-                "volumeMounts": [{"name": SIDECAR_VOLUME, "mountPath": SIDECAR_DIR}],
-                "securityContext": {**locked, "runAsUser": 1000, "runAsGroup": 100},
-                "readinessProbe": {
-                    "exec": {"command": ["python", "-m", "booth.sidecar_token", "probe", f"http://{SIDECAR_LISTEN}/healthz"]},
-                    "periodSeconds": 5,
-                    "timeoutSeconds": 5,
-                },
-                "resources": {"requests": {"cpu": "10m", "memory": "48Mi"}, "limits": {"cpu": "200m", "memory": "128Mi"}},
-            },
-            {
+        common_args = [f"--access={access}", f"--core-url={self.core_url}", f"--workspace={ws}", f"--token-file={SIDECAR_TOKEN_FILE}"]
+        token_mount = {"name": SIDECAR_VOLUME, "mountPath": SIDECAR_DIR, "readOnly": True}
+        resources = {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"cpu": "200m", "memory": "64Mi"}}
+        sidecars, health = [], []
+        if self.database_sidecar_enabled:
+            health.append(f"http://{SIDECAR_LISTEN}/healthz")
+            sidecars.append({
                 "name": "credential-sidecar",
                 "image": self.credential_sidecar_image,
                 "imagePullPolicy": "IfNotPresent",
                 "args": [
                     "--kind=postgres",
                     "--scope=" + _literal(json.dumps({"workspace": ws}, separators=(",", ":"))),
-                    f"--access={access}",
                     f"--listen={SIDECAR_LISTEN}",
-                    f"--core-url={self.core_url}",
-                    f"--workspace={ws}",
-                    f"--token-file={SIDECAR_TOKEN_FILE}",
+                    *common_args,
                 ],
                 "env": sidecar_env,
-                "volumeMounts": [{"name": SIDECAR_VOLUME, "mountPath": SIDECAR_DIR, "readOnly": True}],
+                "volumeMounts": [token_mount],
                 # distroless nonroot (65532); reads the 0640 token file through the pod's fsGroup (100)
                 "securityContext": {**locked, "runAsUser": 65532, "runAsGroup": 65532, "readOnlyRootFilesystem": True},
-                "resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"cpu": "200m", "memory": "64Mi"}},
+                "resources": resources,
+            })
+        if s3_scope is not None:
+            health.append(f"http://{S3_HEALTH_LISTEN}/healthz")
+            sidecars.append({
+                "name": "credential-sidecar-s3",
+                "image": self.credential_sidecar_image,
+                "imagePullPolicy": "IfNotPresent",
+                "args": [
+                    "--kind=s3",
+                    "--scope=" + _literal(json.dumps(s3_scope, separators=(",", ":"))),
+                    f"--credentials-file={S3_CREDENTIALS_FILE}",
+                    f"--health-listen={S3_HEALTH_LISTEN}",
+                    *common_args,
+                ],
+                "env": sidecar_env,
+                "volumeMounts": [token_mount, {"name": S3_VOLUME, "mountPath": S3_DIR}],
+                # booth-core's s3file.go writes both files 0600, so this sidecar runs as the notebook's own
+                # uid, the one other reader of them. The volume is read-only in the notebook.
+                "securityContext": {**locked, "runAsUser": 1000, "runAsGroup": 100, "readOnlyRootFilesystem": True},
+                "resources": resources,
+            })
+        if not sidecars:
+            return []
+        token_helper = {
+            # Keeps the notebook's own platform token (booth.platform_token(), ADR 0056) fresh in a file
+            # for the sidecars, and runs their readiness check: their /healthz is loopback-only and their
+            # image distroless, so neither a kubelet httpGet nor an exec in their own container can reach
+            # it. This container shares the pod's network namespace.
+            "name": "booth-token",
+            "image": self.image,
+            "imagePullPolicy": self.image_pull_policy,
+            "command": ["python", "-m", "booth.sidecar_token", "write", SIDECAR_TOKEN_FILE],
+            "env": [{"name": k, "value": _literal(str(env[k]))} for k in token_env if k in env],
+            "volumeMounts": [{"name": SIDECAR_VOLUME, "mountPath": SIDECAR_DIR}],
+            "securityContext": {**locked, "runAsUser": 1000, "runAsGroup": 100},
+            "readinessProbe": {
+                "exec": {"command": ["python", "-m", "booth.sidecar_token", "probe", *health]},
+                "periodSeconds": 5,
+                "timeoutSeconds": 5,
             },
-        ]
+            "resources": {"requests": {"cpu": "10m", "memory": "48Mi"}, "limits": {"cpu": "200m", "memory": "128Mi"}},
+        }
+        return [token_helper, *sidecars]
 
     def is_pod_running(self, pod):
         """The server is up when the NOTEBOOK container is ready; the credential sidecar and its token helper
@@ -231,18 +306,22 @@ class BoothSpawner(KubeSpawner):
         # Every pod carries its workspace as a label: what a per-workspace NetworkPolicy, quota or
         # "stop everything in workspace X" operation selects on.
         self.extra_labels = {**self.extra_labels, WORKSPACE_LABEL: workspace_of(self.user.name)}
-        saved = (self.extra_containers, self.volumes)
-        if self.database_sidecar_enabled:
+        saved = (self.extra_containers, self.volumes, self.volume_mounts)
+        self._s3_scope = await self.resolve_s3_scope()
+        if self.database_sidecar_enabled or self._s3_scope is not None:
             # The broker refuses `readwrite` to a viewer, and a refusal makes the sidecar exit (contract:
             # a config error should crash-loop visibly). Viewers may open notebooks (ADR 0070), so ask for
             # exactly what the person's role allows. The token is role-capped live either way.
             state = await self.user.get_auth_state() or {}
             access = "readwrite" if state.get("role") in (OWNER, EDITOR) else "read"
-            self.extra_containers = [*saved[0], *self.database_sidecar_containers(self.get_env(), access)]
+            self.extra_containers = [*saved[0], *self.sidecar_containers(self.get_env(), access, self._s3_scope)]
             self.volumes = [*saved[1], {"name": SIDECAR_VOLUME, "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}]
+        if self._s3_scope is not None:
+            self.volumes = [*self.volumes, {"name": S3_VOLUME, "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}]
+            self.volume_mounts = [*saved[2], {"name": S3_VOLUME, "mountPath": S3_DIR, "readOnly": True}]
         try:
             pod = await super().get_pod_manifest()
         finally:
-            self.extra_containers, self.volumes = saved
+            self.extra_containers, self.volumes, self.volume_mounts = saved
         check_pod(pod)
         return pod

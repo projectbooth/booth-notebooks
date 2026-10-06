@@ -307,6 +307,47 @@ def test_the_rendered_sidecar_settings_are_a_valid_hub_configuration():
     assert c.BoothSpawner.sidecar_renew_interval_seconds == 5
 
 
+STORAGE_URL = "minio.storage.svc:9000"
+STORAGE_SELECTORS = ["--set-json", 'singleuser.networkPolicy.egress.boothStorage.namespaceSelector={"kubernetes.io/metadata.name":"storage"}',
+                     "--set-json", 'singleuser.networkPolicy.egress.boothStorage.podSelector={"app":"minio"}']
+
+
+def _storage_rules(np: dict) -> list[dict]:
+    return [r for r in np["spec"]["egress"]
+            if any(t.get("podSelector", {}).get("matchLabels", {}) == {"app": "minio"} for t in r.get("to", []))]
+
+
+def test_booth_storage_url_opens_exactly_the_s3_backend_and_turns_on_the_s3_sidecar():
+    """ADR 0095 third amendment: booth-pipeline's boothStorage.url gate and rule, for notebook pods."""
+    items = docs("--set", f"boothStorage.url={STORAGE_URL}", *STORAGE_SELECTORS)
+    np = one(items, "NetworkPolicy", f"{FULL}-singleuser")
+    (rule,) = _storage_rules(np)
+    assert rule["to"][0]["namespaceSelector"]["matchLabels"] == {"kubernetes.io/metadata.name": "storage"}
+    assert rule["ports"] == [{"protocol": "TCP", "port": 9000}]
+    default = one(docs(), "NetworkPolicy", f"{FULL}-singleuser")
+    assert len(np["spec"]["egress"]) == len(default["spec"]["egress"]) + 1 and _storage_rules(default) == []
+    hub_env = env(one(items, "Deployment", f"{FULL}-hub"))
+    assert hub_env["BOOTH_NOTEBOOKS_BOOTH_STORAGE_URL"]["value"] == STORAGE_URL
+    assert "BOOTH_NOTEBOOKS_BOOTH_DATABASE_URL" not in hub_env  # the two kinds are gated independently
+    assert re.fullmatch(r"ghcr\.io/projectbooth/credential-sidecar@sha256:[0-9a-f]{64}", hub_env["BOOTH_NOTEBOOKS_CREDENTIAL_SIDECAR_IMAGE"]["value"])
+    c = Config()
+    configure(c, _hub_env_as_the_container_sees_it(one(items, "Deployment", f"{FULL}-hub")))
+    assert c.BoothSpawner.booth_storage_url == STORAGE_URL and c.BoothSpawner.booth_database_url == ""
+
+
+def test_booth_storage_url_requires_both_selectors():
+    out = helm("template", "x", str(CHART), *REQUIRED, "--set", f"boothStorage.url={STORAGE_URL}")
+    assert out.returncode != 0 and "selector" in out.stderr and "required" in out.stderr
+    out = helm("template", "x", str(CHART), *REQUIRED, "--set", f"boothStorage.url={STORAGE_URL}", *STORAGE_SELECTORS[:2])
+    assert out.returncode != 0 and "required" in out.stderr
+
+
+def test_booth_storage_url_refuses_a_tagged_sidecar_image():
+    out = helm("template", "x", str(CHART), *REQUIRED, "--set", f"boothStorage.url={STORAGE_URL}", *STORAGE_SELECTORS,
+               "--set", "credentialSidecar.image=ghcr.io/projectbooth/credential-sidecar:latest")
+    assert out.returncode != 0 and "pinned by digest" in out.stderr
+
+
 def test_the_old_database_url_name_fails_loudly_instead_of_silently_rendering_no_rule():
     """ADR 0092 was amended from database.url to boothDatabase.url. Setting the old name must not quietly do
     nothing (leaving kernels cut off from their database) — nor be read as the hub's own database."""

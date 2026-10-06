@@ -1,0 +1,42 @@
+# Stand-in for a booth-storage S3 backend (integration test only): the image booth-storage's own emulator
+# compose file uses, pinned by digest. Labelled to match the suite's singleuser.networkPolicy.egress.boothStorage
+# selectors (namespace "storage", app=minio), so a notebook reaches it only through that rule.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  labels: {app: minio}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: minio}
+  template:
+    metadata:
+      labels: {app: minio}
+    spec:
+      containers:
+        - name: minio
+          image: ghcr.io/projectbooth/minio-test@sha256:04c918e8877a410f40ccab0842f724177af453f236a5fda96df219867aefe3c3
+          args: [server, /data]
+          env:
+            - {name: MINIO_ROOT_USER, value: kindtest}
+            - {name: MINIO_ROOT_PASSWORD, value: kindtest-secret}
+          ports:
+            - containerPort: 9000
+          readinessProbe:
+            httpGet: {path: /minio/health/ready, port: 9000}
+            periodSeconds: 2
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+spec:
+  selector: {app: minio}
+  ports:
+    - {port: 9000, targetPort: 9000}
