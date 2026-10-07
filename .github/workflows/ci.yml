@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   python:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,7 +37,7 @@ jobs:
   theme-sync:
     # The ADR 0075 JupyterLab extension (images/singleuser/theme-sync): typecheck + the postMessage handshake
     # tests on Node. The image build below runs the same tests again inside its builder stage.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: images/singleuser/theme-sync
@@ -54,7 +54,7 @@ jobs:
 
   images:
     # Catches a broken Dockerfile on the PR that breaks it, and smoke-checks what each image must contain.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Build
