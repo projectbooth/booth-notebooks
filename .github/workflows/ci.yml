@@ -33,6 +33,15 @@ jobs:
           # A missing helm must FAIL the build, never silently skip the contract tests green.
           BOOTH_TEST_REQUIRE_EMULATORS: "1"
         run: pytest tests/unit tests/client tests/hub tests/contract
+      - name: The release chart step still packages and renders (release.yml, ADR 0111)
+        # Same packaging as the tag-triggered release, at a throwaway version: the packaged chart must render
+        # with default values, and both images must follow the chart's appVersion.
+        run: |
+          helm lint charts/booth-notebooks
+          helm package charts/booth-notebooks --version 0.0.0-ci --app-version 0.0.0-ci --destination dist
+          helm template nb dist/booth-notebooks-0.0.0-ci.tgz > dist/render.yaml
+          grep -q '"ghcr.io/projectbooth/booth-notebooks-hub:0.0.0-ci"' dist/render.yaml
+          grep -q '"ghcr.io/projectbooth/booth-notebooks-singleuser:0.0.0-ci"' dist/render.yaml
 
   theme-sync:
     # The ADR 0075 JupyterLab extension (images/singleuser/theme-sync): typecheck + the postMessage handshake
