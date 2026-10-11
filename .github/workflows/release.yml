@@ -1,0 +1,81 @@
+name: Release
+
+# ADR 0111: publishes both images and the Helm chart at one matching version, so an install pins to
+# oci://ghcr.io/projectbooth/charts/booth-notebooks at X.Y.Z (booth-core's install API takes only an
+# OCI chart reference). Modelled on booth-storage's release workflow, plus the OCI chart push.
+# Pushing a `vX.Y.Z` tag triggers it. Two images, one version: the hub, and the singleuser notebook
+# image the hub spawns (the chart defaults both tags to its appVersion).
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Hub image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/hub/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/projectbooth/booth-notebooks-hub:${{ steps.version.outputs.version }}
+            ghcr.io/projectbooth/booth-notebooks-hub:latest
+
+      - name: Singleuser image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/singleuser/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/projectbooth/booth-notebooks-singleuser:${{ steps.version.outputs.version }}
+            ghcr.io/projectbooth/booth-notebooks-singleuser:latest
+
+  chart:
+    needs: image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: Package chart at the release version
+        working-directory: charts/booth-notebooks
+        run: |
+          helm package . \
+            --version "${{ needs.image.outputs.version }}" \
+            --app-version "${{ needs.image.outputs.version }}" \
+            --destination ../../dist
+
+      - name: Attach chart to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tgz
+          generate_release_notes: true
+
+      - name: Push chart to GHCR as an OCI artifact
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+          helm push "dist/booth-notebooks-${{ needs.image.outputs.version }}.tgz" oci://ghcr.io/projectbooth/charts
