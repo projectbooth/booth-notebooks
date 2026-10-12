@@ -7,3 +7,13 @@ type: application
 version: 0.1.0
 appVersion: "0.1.0"
 home: https://github.com/projectbooth/booth-notebooks
+
+# ADR 0113 / contracts/module-manifest.md "Chart annotation: identity keys": tells booth-core's install
+# API which of this chart's values.yaml paths carry the platform's shared identity settings, so a module
+# installed through the install API (the Module Store's Install button included) is configured without
+# hand-typed values. Core fills a mapped path only when the request doesn't already set it. No
+# workloadIssuerUrl: the hub mints workload tokens but never verifies them. iframeIssuerUrl is
+# identity.issuerUrl, whose default already equals core's own iframe-identity issuer.
+annotations:
+  booth.projectbooth.io/identity-keys: |
+    {"issuerUrl":"oidc.issuerUrl","clientId":"oidc.clientId","jwksUrl":"oidc.jwksUrl","groupsClaim":"oidc.groupsClaim","iframeIssuerUrl":"identity.issuerUrl"}

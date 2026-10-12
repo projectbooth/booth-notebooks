@@ -40,7 +40,7 @@ WORKSPACE = os.environ.get("BOOTH_REAL_WORKSPACE", "acme-analytics")
 CONTEXT = os.environ.get("BOOTH_REAL_KUBE_CONTEXT", "")
 NS = os.environ.get("BOOTH_REAL_NAMESPACE", "booth-notebooks")
 PROXY_DIRECT = os.environ.get("BOOTH_REAL_PROXY_DIRECT_URL", "")  # optional: the notebooks proxy, bypassing core
-CORE_WORKLOAD_ISSUER = os.environ.get("BOOTH_REAL_CORE_WORKLOAD_ISSUER", "http://booth-core.booth-system.svc:8080")
+CORE_WORKLOAD_ISSUER = os.environ.get("BOOTH_REAL_CORE_WORKLOAD_ISSUER", "http://booth-core.booth-system.svc.cluster.local:8080")
 CORE_IFRAME_ISSUER = os.environ.get("BOOTH_REAL_CORE_IFRAME_ISSUER", "http://booth-core.booth-system.svc.cluster.local:8080/iframe-identity")
 
 

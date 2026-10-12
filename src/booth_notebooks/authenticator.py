@@ -73,7 +73,7 @@ class BoothAuthenticator(Authenticator):
     trusted_issuers = List(
         Dict(),
         config=True,
-        help="[{url, audience}] issuers whose tokens may identify a person here.",
+        help="[{url, audience, jwks_url?}] issuers whose tokens may identify a person here.",
     )
     groups_claim = Unicode("groups", config=True, help="Must match booth-core's (ADR 0025).")
     allowed_roles = List(Unicode(), default_value=[ident.OWNER, ident.EDITOR, ident.VIEWER], config=True)
@@ -83,11 +83,16 @@ class BoothAuthenticator(Authenticator):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         refresh_on_every_request()
+        for issuer in self._issuers():  # once, at hub startup (ADR 0108): issuer and where its keys come from
+            self.log.info("trusting issuer %s; signing keys from %s", issuer.url, issuer.keys_from)
+
+    def _issuers(self) -> list[ident.TrustedIssuer]:
+        return [ident.TrustedIssuer(str(i["url"]).rstrip("/"), str(i.get("audience", "")), str(i.get("jwks_url", "")))
+                for i in self.trusted_issuers]
 
     def _get_verifier(self) -> ident.Verifier:
         if self._verifier is None:
-            issuers = [ident.TrustedIssuer(str(i["url"]).rstrip("/"), str(i.get("audience", ""))) for i in self.trusted_issuers]
-            self._verifier = ident.Verifier(issuers, self.groups_claim)
+            self._verifier = ident.Verifier(self._issuers(), self.groups_claim)
         return self._verifier
 
     def set_verifier(self, verifier: ident.Verifier) -> None:

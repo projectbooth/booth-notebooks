@@ -24,6 +24,12 @@ oidc:
   # the proxy in front of this module forwards the user's own token instead of a core assertion.
   issuerUrl: ""
   clientId: ""
+  # ADR 0108 key-fetch override, for issuerUrl only. Empty (the default) = ordinary discovery. Set, the
+  # hub fetches signing keys directly from this URL (e.g. Keycloak's in-cluster Service over plain http)
+  # and still compares `iss` exactly with issuerUrl; setting it without issuerUrl stops the hub at
+  # startup. The fetch is unauthenticated and unencrypted, so it relies on NetworkPolicy and cluster
+  # trust. A bundled install through core's install API fills it in (ADR 0113).
+  jwksUrl: ""
   requireAudience: true
   # Must match booth-core's BOOTH_OIDC_GROUPS_CLAIM (ADR 0025), or every login is refused.
   groupsClaim: groups
