@@ -13,7 +13,8 @@ home: https://github.com/projectbooth/booth-notebooks
 # installed through the install API (the Module Store's Install button included) is configured without
 # hand-typed values. Core fills a mapped path only when the request doesn't already set it. No
 # workloadIssuerUrl: the hub mints workload tokens but never verifies them. iframeIssuerUrl is
-# identity.issuerUrl, whose default already equals core's own iframe-identity issuer.
+# identity.issuerUrl, whose default already equals core's own iframe-identity issuer. coreUrl (amendment 1)
+# is core.url, which the hub reads as BOOTH_CORE_URL; its default stays the fallback for CLI installs.
 annotations:
   booth.projectbooth.io/identity-keys: |
-    {"issuerUrl":"oidc.issuerUrl","clientId":"oidc.clientId","jwksUrl":"oidc.jwksUrl","groupsClaim":"oidc.groupsClaim","iframeIssuerUrl":"identity.issuerUrl"}
+    {"issuerUrl":"oidc.issuerUrl","clientId":"oidc.clientId","jwksUrl":"oidc.jwksUrl","groupsClaim":"oidc.groupsClaim","iframeIssuerUrl":"identity.issuerUrl","coreUrl":"core.url"}
