@@ -110,6 +110,7 @@ where the platform's shared identity settings go in this chart:
 | `jwksUrl` | `oidc.jwksUrl` |
 | `groupsClaim` | `oidc.groupsClaim` |
 | `iframeIssuerUrl` | `identity.issuerUrl` |
+| `coreUrl` | `core.url` |
 
 Core fills a path only when the install request doesn't set it. A `helm install` from the CLI never runs that
 code and uses the defaults above.

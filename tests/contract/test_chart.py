@@ -421,7 +421,7 @@ def test_profiles_and_idp_settings_round_trip():
 # JSON, name only shared settings, and map each to a values.yaml path that has a default, or core's merge
 # would write somewhere `helm template` and CLI installs never read.
 
-SHARED_IDENTITY_KEYS = {"issuerUrl", "clientId", "jwksUrl", "workloadIssuerUrl", "groupsClaim", "iframeIssuerUrl"}
+SHARED_IDENTITY_KEYS = {"issuerUrl", "clientId", "jwksUrl", "workloadIssuerUrl", "groupsClaim", "iframeIssuerUrl", "coreUrl"}
 # What booth-core's chart renders for BOOTH_IFRAME_IDENTITY_ISSUER_URL (release booth-core, booth-system):
 # the value core supplies for iframeIssuerUrl, compared character for character.
 CORE_IFRAME_ISSUER = "http://booth-core.booth-system.svc.cluster.local:8080/iframe-identity"
@@ -464,10 +464,27 @@ def test_identity_keys_annotation_maps_exactly_this_charts_settings():
         "jwksUrl": "oidc.jwksUrl",
         "groupsClaim": "oidc.groupsClaim",
         "iframeIssuerUrl": "identity.issuerUrl",
+        "coreUrl": "core.url",
     }  # no workloadIssuerUrl: the hub mints workload tokens, it never verifies them
     # Core fills iframeIssuerUrl only when the install request doesn't set it; a CLI install keeps this
     # default, so the two must agree exactly or the same chart would trust different issuers.
     assert values["identity"]["issuerUrl"] == CORE_IFRAME_ISSUER
+
+
+def test_core_url_is_where_the_chart_uses_its_core_address():
+    # ADR 0113 amendment 1: what core supplies for coreUrl must reach the hub as BOOTH_CORE_URL, from which
+    # it derives the kernels' gateway (and the credential sidecar's broker).
+    stub = "http://core.stub.test:9999"
+    rendered = docs("--set", f"core.url={stub}")
+    h = one(rendered, "Deployment", f"{FULL}-hub")
+    assert env(h)["BOOTH_CORE_URL"]["value"] == stub
+    c = Config()
+    configure(c, _hub_env_as_the_container_sees_it(h))
+    assert c.BoothSpawner.gateway_url == f"{stub}/modules"
+    # Unset, the values.yaml default (the fallback for CLI installs) is what renders.
+    assert env(one(docs(), "Deployment", f"{FULL}-hub"))["BOOTH_CORE_URL"]["value"] == yaml.safe_load(
+        (CHART / "values.yaml").read_text(encoding="utf-8")
+    )["core"]["url"]
 
 
 # ---- ADR 0108: oidc.jwksUrl -------------------------------------------------------------------------
