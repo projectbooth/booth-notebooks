@@ -6,6 +6,7 @@ missing helm FAILS instead of skipping green.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -16,7 +17,7 @@ import pytest
 import yaml
 from traitlets.config import Config
 
-from booth_notebooks.hubconfig import configure
+from booth_notebooks.hubconfig import ConfigError, configure
 
 CHART = Path(__file__).resolve().parents[2] / "charts" / "booth-notebooks"
 REQUIRED = ["--set", "identity.issuerUrl=http://booth-core.booth-system.svc:8080/iframe-identity"]
@@ -413,3 +414,84 @@ def test_profiles_and_idp_settings_round_trip():
     configure(c, _hub_env_as_the_container_sees_it(one(items, "Deployment", f"{FULL}-hub")))
     assert {"url": "https://kc.example.com/realms/booth", "audience": "booth-design"} in c.BoothAuthenticator.trusted_issuers
     assert c.BoothSpawner.profile_list[0]["kubespawner_override"]["image"] == "r:1"
+
+
+# ---- ADR 0113: the identity-keys chart annotation (contracts/module-manifest.md) ------------------
+# booth-storage's TestChart_IdentityKeysAnnotation, in this repo's language: the annotation must be valid
+# JSON, name only shared settings, and map each to a values.yaml path that has a default, or core's merge
+# would write somewhere `helm template` and CLI installs never read.
+
+SHARED_IDENTITY_KEYS = {"issuerUrl", "clientId", "jwksUrl", "workloadIssuerUrl", "groupsClaim", "iframeIssuerUrl"}
+# What booth-core's chart renders for BOOTH_IFRAME_IDENTITY_ISSUER_URL (release booth-core, booth-system):
+# the value core supplies for iframeIssuerUrl, compared character for character.
+CORE_IFRAME_ISSUER = "http://booth-core.booth-system.svc.cluster.local:8080/iframe-identity"
+_MISSING = object()
+
+
+def _value_at(values: dict, path: str):
+    cur = values
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return _MISSING
+        cur = cur[part]
+    return cur
+
+
+def _identity_keys() -> tuple[dict, dict]:
+    chart_yaml = yaml.safe_load((CHART / "Chart.yaml").read_text(encoding="utf-8"))
+    raw = (chart_yaml.get("annotations") or {}).get("booth.projectbooth.io/identity-keys")
+    assert raw is not None, "Chart.yaml is missing the booth.projectbooth.io/identity-keys annotation (ADR 0113)"
+    try:
+        mapping = json.loads(raw)
+    except ValueError as e:
+        pytest.fail(f"booth.projectbooth.io/identity-keys is not valid JSON: {e}\nvalue: {raw}")
+    assert isinstance(mapping, dict) and mapping, "booth.projectbooth.io/identity-keys decoded to an empty object"
+    return mapping, yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))
+
+
+def test_identity_keys_annotation_is_valid_and_every_path_has_a_default():
+    mapping, values = _identity_keys()
+    for key, path in mapping.items():
+        assert key in SHARED_IDENTITY_KEYS, f"identity-keys names unknown shared setting {key!r} (want one of {sorted(SHARED_IDENTITY_KEYS)})"
+        assert _value_at(values, path) is not _MISSING, f"identity-keys maps {key!r} to values.yaml path {path!r}, which has no default"
+
+
+def test_identity_keys_annotation_maps_exactly_this_charts_settings():
+    mapping, values = _identity_keys()
+    assert mapping == {
+        "issuerUrl": "oidc.issuerUrl",
+        "clientId": "oidc.clientId",
+        "jwksUrl": "oidc.jwksUrl",
+        "groupsClaim": "oidc.groupsClaim",
+        "iframeIssuerUrl": "identity.issuerUrl",
+    }  # no workloadIssuerUrl: the hub mints workload tokens, it never verifies them
+    # Core fills iframeIssuerUrl only when the install request doesn't set it; a CLI install keeps this
+    # default, so the two must agree exactly or the same chart would trust different issuers.
+    assert values["identity"]["issuerUrl"] == CORE_IFRAME_ISSUER
+
+
+# ---- ADR 0108: oidc.jwksUrl -------------------------------------------------------------------------
+
+JWKS = "http://keycloak.keycloak.svc.cluster.local:8080/realms/booth/protocol/openid-connect/certs"
+OIDC_SET = ["--set", "oidc.issuerUrl=https://booth.example.test/realms/booth", "--set", "oidc.clientId=booth-design"]
+
+
+def test_jwks_url_is_empty_by_default_and_renders_nothing(hub):
+    assert yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))["oidc"]["jwksUrl"] == ""
+    assert "BOOTH_OIDC_JWKS_URL" not in env(hub)
+
+
+def test_jwks_url_reaches_the_hub_and_configures_the_oidc_issuer():
+    h = one(docs(*OIDC_SET, "--set", f"oidc.jwksUrl={JWKS}"), "Deployment", f"{FULL}-hub")
+    assert env(h)["BOOTH_OIDC_JWKS_URL"]["value"] == JWKS
+    c = Config()
+    configure(c, _hub_env_as_the_container_sees_it(h))
+    oidc = [i for i in c.BoothAuthenticator.trusted_issuers if i["url"] == "https://booth.example.test/realms/booth"]
+    assert oidc == [{"url": "https://booth.example.test/realms/booth", "audience": "booth-design", "jwks_url": JWKS}]
+
+
+def test_jwks_url_without_an_issuer_still_renders_so_the_hub_refuses_to_start():
+    h = one(docs("--set", f"oidc.jwksUrl={JWKS}"), "Deployment", f"{FULL}-hub")
+    assert env(h)["BOOTH_OIDC_JWKS_URL"]["value"] == JWKS
+    with pytest.raises(ConfigError, match="BOOTH_OIDC_ISSUER_URL"):
+        configure(Config(), _hub_env_as_the_container_sees_it(h))

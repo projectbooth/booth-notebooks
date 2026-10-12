@@ -52,10 +52,21 @@ class AuthError(Exception):
 @dataclass(frozen=True)
 class TrustedIssuer:
     """One issuer whose tokens may identify a person here. ``audience`` empty = don't check ``aud``
-    (a per-deployment policy choice, core-platform-api.md)."""
+    (a per-deployment policy choice, core-platform-api.md).
+
+    ``jwks_url`` (ADR 0108's key-fetch override, ``oidc.jwksUrl``): when set, signing keys are fetched
+    directly from it and discovery is never contacted; ``iss`` is still compared exactly with ``url``.
+    Empty (the default) is ordinary discovery against ``url``. The fetch is unauthenticated, so it relies
+    on NetworkPolicy and cluster trust."""
 
     url: str
     audience: str = ""
+    jwks_url: str = ""
+
+    @property
+    def keys_from(self) -> str:
+        """Where this issuer's signing keys come from, for the one startup log line."""
+        return self.jwks_url or f"discovery ({self.url}/.well-known/openid-configuration)"
 
 
 @dataclass(frozen=True)
@@ -78,6 +89,9 @@ class _IssuerKeys:
 
     def client(self) -> PyJWKClient:
         with self._lock:
+            if self._jwks is None and self.issuer.jwks_url:
+                # ADR 0108: keys straight from the configured URL; discovery is skipped entirely.
+                self._jwks = PyJWKClient(self.issuer.jwks_url, cache_keys=True, lifespan=300)
             if self._jwks is None:
                 with httpx.Client(transport=self._transport, timeout=10) as http:
                     resp = http.get(f"{self.issuer.url}/.well-known/openid-configuration")
@@ -112,7 +126,7 @@ class Verifier:
     def __init__(self, issuers: list[TrustedIssuer], groups_claim: str = "groups", keys: KeySource | None = None) -> None:
         if not issuers:
             raise ValueError("at least one trusted issuer is required")
-        self._issuers = {i.url.rstrip("/"): TrustedIssuer(i.url.rstrip("/"), i.audience) for i in issuers}
+        self._issuers = {i.url.rstrip("/"): TrustedIssuer(i.url.rstrip("/"), i.audience, i.jwks_url) for i in issuers}
         self._groups_claim = groups_claim or "groups"
         self._keys = keys or DiscoveryKeySource(list(self._issuers.values()))
 

@@ -104,6 +104,12 @@ spec:
             - name: BOOTH_OIDC_REQUIRE_AUDIENCE
               value: {{ $.Values.oidc.requireAudience | quote }}
             {{- end }}
+            {{- with .Values.oidc.jwksUrl }}
+            # ADR 0108: keys for oidc.issuerUrl from here, not discovery. Rendered even without an issuer
+            # so the hub refuses to start rather than silently ignoring it.
+            - name: BOOTH_OIDC_JWKS_URL
+              value: {{ . | quote }}
+            {{- end }}
             # The role is re-derived from this claim (ADR 0041), so it MUST match booth-core's.
             - name: BOOTH_OIDC_GROUPS_CLAIM
               value: {{ .Values.oidc.groupsClaim | quote }}

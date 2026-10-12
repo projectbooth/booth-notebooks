@@ -59,6 +59,9 @@ def trusted_issuers(env: Mapping[str, str]) -> list[dict]:
       iframe proxy is proposed to forward (docs/decisions/0002). Audience defaults to this module's id.
     * ``BOOTH_OIDC_ISSUER_URL`` — the deployment's IdP, verified exactly like every other module does,
       for a deployment whose proxy forwards the user's own token instead.
+    * ``BOOTH_OIDC_JWKS_URL`` (ADR 0108, chart ``oidc.jwksUrl``) — optional, for that IdP only: fetch its
+      signing keys directly from this URL instead of discovery, still comparing ``iss`` exactly with
+      ``BOOTH_OIDC_ISSUER_URL``. Setting it without ``BOOTH_OIDC_ISSUER_URL`` is a startup error.
     """
     out: list[dict] = []
     if env.get("BOOTH_IDENTITY_ISSUER_URL"):
@@ -68,7 +71,13 @@ def trusted_issuers(env: Mapping[str, str]) -> list[dict]:
         client_id = env.get("BOOTH_OIDC_CLIENT_ID", "")
         if require_aud and not client_id:
             raise ConfigError("BOOTH_OIDC_CLIENT_ID is required when BOOTH_OIDC_REQUIRE_AUDIENCE is true")
-        out.append({"url": env["BOOTH_OIDC_ISSUER_URL"].rstrip("/"), "audience": client_id if require_aud else ""})
+        oidc = {"url": env["BOOTH_OIDC_ISSUER_URL"].rstrip("/"), "audience": client_id if require_aud else ""}
+        if env.get("BOOTH_OIDC_JWKS_URL"):
+            oidc["jwks_url"] = env["BOOTH_OIDC_JWKS_URL"]
+        out.append(oidc)
+    elif env.get("BOOTH_OIDC_JWKS_URL"):
+        raise ConfigError("BOOTH_OIDC_JWKS_URL (oidc.jwksUrl) is set but BOOTH_OIDC_ISSUER_URL (oidc.issuerUrl) is empty: "
+                          "the issuer is still required to validate `iss`")
     if not out:
         raise ConfigError("set BOOTH_IDENTITY_ISSUER_URL and/or BOOTH_OIDC_ISSUER_URL: the hub verifies every login itself")
     return out

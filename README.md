@@ -90,6 +90,30 @@ a lakehouse warehouse, found at spawn via booth-lakehouse, giving kernels `AWS_S
 `AWS_CONFIG_FILE`; ADR 0095 third amendment, docs/decisions/0009),
 `credentialSidecar.image` (pinned by digest; a tag is refused). NetworkPolicies need a CNI that enforces them.
 
+**`oidc.jwksUrl` (ADR 0108), optional, default empty.** It applies only to `oidc.issuerUrl`; core's iframe-identity
+issuer is unaffected. Empty means ordinary OIDC discovery against `oidc.issuerUrl`. When set, the hub skips
+discovery and fetches the IdP's signing keys directly from this URL, for example Keycloak's in-cluster
+Service over plain http, so no pod has to trust a self-signed Ingress certificate. `iss` is still compared
+exactly with `oidc.issuerUrl`, and setting `jwksUrl` without `issuerUrl` stops the hub at startup. The hub
+logs each trusted issuer and where its keys come from once at startup; it never logs tokens. **Trust
+assumption:** the key fetch is in-cluster, unauthenticated and unencrypted. Anyone who can answer that URL
+can mint tokens the hub accepts, so it relies on NetworkPolicy and cluster trust.
+
+**Installs through booth-core (ADR 0113).** `Chart.yaml` carries the annotation
+`booth.projectbooth.io/identity-keys`, which tells core's install API (and the Module Store's Install button)
+where the platform's shared identity settings go in this chart:
+
+| Shared setting | Values path |
+|---|---|
+| `issuerUrl` | `oidc.issuerUrl` |
+| `clientId` | `oidc.clientId` |
+| `jwksUrl` | `oidc.jwksUrl` |
+| `groupsClaim` | `oidc.groupsClaim` |
+| `iframeIssuerUrl` | `identity.issuerUrl` |
+
+Core fills a path only when the install request doesn't set it. A `helm install` from the CLI never runs that
+code and uses the defaults above.
+
 ### Data lifecycle
 
 - Stopping a server (or the idle culler, default 1 h) deletes its **pod**. The home **volume**
