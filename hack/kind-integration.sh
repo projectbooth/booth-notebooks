@@ -5,7 +5,10 @@
 #   hack/kind-integration.sh            # create (or reuse) cluster booth-notebooks-it, run, keep it
 #   KEEP_CLUSTER=0 hack/kind-integration.sh   # delete the cluster afterwards
 #
-# Needs: docker, kind, kubectl, helm, and the dev venv (pip install -e ".[dev]" -e client).
+# A cluster created here runs Calico (tests/integration/cni/). A reused cluster must too: on kindnet the
+# egress test fails, because its policy-applied step finds nothing blocked.
+#
+# Needs: docker, kind, kubectl, helm, bash, curl, sha256sum, and the dev venv (pip install -e ".[dev]" -e client).
 set -eu
 
 CLUSTER="${BOOTH_KIND_CLUSTER:-booth-notebooks-it}"
@@ -17,7 +20,11 @@ SINGLEUSER_IMAGE="booth-notebooks-singleuser:ci"
 cd "$(dirname "$0")/.."
 
 if ! "$KIND" get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
-  "$KIND" create cluster --name "$CLUSTER" --wait 120s
+  # Calico, not kindnet: kindnet doesn't enforce egress NetworkPolicy, which the egress test asserts.
+  "$KIND" create cluster --name "$CLUSTER" --config tests/integration/cni/kind-calico.yaml
+  bash tests/integration/cni/calico.sh
+  # LAN probes: CI also runs `tests/integration/cni/lan-targets.sh "$CLUSTER"` (Linux host, sudo) and sets
+  # BOOTH_LAN_TARGETS=1; without them the egress test skips its LAN hosts and says so.
 fi
 
 docker build -t "$HUB_IMAGE" -f images/hub/Dockerfile .
@@ -29,7 +36,7 @@ docker build -t "$SINGLEUSER_IMAGE" -f images/singleuser/Dockerfile .
 
 status=0
 BOOTH_KIND_CLUSTER="$CLUSTER" BOOTH_HUB_IMAGE="$HUB_IMAGE" BOOTH_SINGLEUSER_IMAGE="$SINGLEUSER_IMAGE" \
-  "$PYTHON" -m pytest tests/integration/test_kind.py -v -p no:cacheprovider || status=$?
+  "$PYTHON" -m pytest tests/integration/test_kind.py -v -rA -p no:cacheprovider || status=$?
 
 if [ "$status" -ne 0 ]; then
   echo "---- diagnostics ----"

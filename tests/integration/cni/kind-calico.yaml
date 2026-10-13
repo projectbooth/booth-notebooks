@@ -1,0 +1,14 @@
+# kind with its default CNI off, for Calico (cni/calico.sh). kindnet enforces NetworkPolicy ingress
+# but not egress (booth-spark measured it on kind v0.33.0 / kindnetd v20260820: a default-deny
+# egress policy left the API server, the internet and another namespace's pod and Service
+# reachable). A notebook pod's egress allowlist is a security boundary (ADR 0057), so Integration
+# needs a CNI that enforces it; test_kind.py's egress test proves it does on every run, by the
+# reachable / blocked / reachable sequence. Copied from booth-streamlit (0e6b084).
+# Pods in kind's usual 10.244.0.0/16, not Calico's default 192.168.0.0/16: that pool would make every
+# 192.168.x address a cluster address, and the egress test probes a 192.168.x LAN host that is not
+# one (cni/lan-targets.env). Calico takes its pool from this (kubeadm's podSubnet).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  disableDefaultCNI: true
+  podSubnet: 10.244.0.0/16

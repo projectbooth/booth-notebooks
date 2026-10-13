@@ -10,8 +10,9 @@ Run by ``hack/kind-integration.sh`` (locally) and ``.github/workflows/integratio
 BOOTH_KIND_CLUSTER names a cluster with the images already loaded.
 
 What this does NOT prove: that booth-core itself reconciles the BoothModule, mints, or proxies iframes
-(booth-e2e's job). NetworkPolicy IS enforced here — kind's default CNI (kindnet) enforces it — and the
-ADR 0092 step relies on that: its "blocked" assertions fail on a CNI that ignores policies.
+(booth-e2e's job). NetworkPolicy egress is enforced because the cluster runs Calico
+(tests/integration/cni/; kind's default kindnet enforces ingress only), and the egress test proves it on
+every run: each denial is reachable with the policy deleted, blocked with it applied, reachable again.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from pathlib import Path
 import httpx
 import jwt
 import pytest
+import yaml
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from booth_notebooks.identity import hub_username
@@ -267,30 +269,154 @@ def test_a_kernel_reaches_the_catalog_as_its_own_short_lived_identity(base):
     assert call["auth"].startswith("Bearer wl-") and call["workspace"] == "acme"
 
 
-def test_booth_database_is_reachable_only_after_opting_in_and_the_hubs_own_database_never(base):
-    """ADR 0092 (as amended), tested as the CNI enforces it, not as the chart renders it: TCP connects from
-    INSIDE a live notebook pod, where user code runs. booth-database's Postgres (a stand-in with its real
-    labels) is blocked until boothDatabase.url is set and reachable after; the hub's own database is
-    blocked throughout. Controls show both addresses are valid, so "blocked" means the policy. Mirrors
-    booth-pipeline's step for its runner (eb67c2b)."""
+# ---- notebook-pod egress, on an enforcing CNI (ARCHITECTURE item 60) -----------------------------
+# The chart's only egress policy is the notebook pods' (<release>-singleuser); the hub's and the proxy's
+# are ingress-only. Integration runs Calico (tests/integration/cni/), because kind's default kindnet
+# enforces ingress but not egress. Every denial below is shown on the same address and port, from the same
+# live notebook pod: reachable with the policy deleted, blocked with it applied, reachable once it is
+# deleted again. A timeout (Calico drops) and a refusal (kube-router rejects, on k3s) both count as
+# "blocked", but only inside that sequence: on its own a refusal only says nothing accepted.
+
+NETPROBE = (FIX / "netprobe.py").read_text(encoding="utf-8")
+BLOCKED = ("closed:TimeoutError", "closed:ConnectionRefusedError")
+LAN = dict(line.split("=", 1) for line in (FIX.parent / "cni" / "lan-targets.env").read_text(encoding="utf-8").splitlines()
+           if line and not line.startswith("#"))
+# CI makes every LAN address answer on the kind host (cni/lan-targets.sh, needs sudo); a local run may not.
+LAN_REQUIRED = os.environ.get("BOOTH_LAN_TARGETS") == "1"
+SINGLEUSER_POLICY = "notebooks-booth-notebooks-singleuser"
+CLUSTER_DNS = "kubernetes.default.svc.cluster.local"
+
+
+def probe(pod: str, targets: dict, dns: str | None = CLUSTER_DNS) -> dict:
+    """TCP connects from INSIDE the notebook container, where user code runs (fixtures/netprobe.py)."""
+    spec = json.dumps({"targets": targets, "dns": dns, "timeout": 3})
+    out = kubectl("-n", NS, "exec", "-i", pod, "-c", "notebook", "--", "python", "-", spec, input=NETPROBE)
+    return json.loads(out.strip().splitlines()[-1])
+
+
+def settle(pod: str, targets: dict, want: tuple[str, ...], what: str, timeout: float = 60) -> dict:
+    """Probe until every target's result is in ``want`` (the CNI programs a changed policy within
+    seconds), then return the results; fail with the last results otherwise."""
+    deadline = time.time() + timeout
+    while True:
+        r = probe(pod, targets)
+        if all(r[name] in want for name in targets) or time.time() > deadline:
+            break
+        time.sleep(2)
+    print(f"{what}: {json.dumps(r)}")
+    bad = {name: r[name] for name in targets if r[name] not in want}
+    assert not bad, f"{what}: want {want} for every target, got {bad} (all: {r})"
+    return r
+
+
+def pod_ip(ns: str, selector: str) -> str:
+    pods = json.loads(kubectl("-n", ns, "get", "pods", "-l", selector, "-o", "json"))["items"]
+    ips = [p["status"].get("podIP") for p in pods
+           if p["status"].get("phase") == "Running" and not p["metadata"].get("deletionTimestamp")]
+    assert ips and ips[0], f"no running pod for {selector} in {ns}"
+    return ips[0]
+
+
+def live_policy() -> str:
+    """The installed policy, as an object that can be created again (server-set fields dropped)."""
+    np = json.loads(kubectl("-n", NS, "get", "networkpolicy", SINGLEUSER_POLICY, "-o", "json"))
+    md = np["metadata"]
+    np["metadata"] = {k: md[k] for k in ("name", "namespace", "labels", "annotations") if k in md}
+    np.pop("status", None)
+    return json.dumps(np)
+
+
+def closed_policy(tmp: Path) -> str:
+    """The chart's own render of the policy with allowInternet=false, for this release's values."""
+    values = tmp / "values.json"
+    values.write_text(sh("helm", "--kube-context", f"kind-{CLUSTER}", "get", "values", "notebooks", "-n", NS, "-o", "json"))
+    out = sh("helm", "template", "notebooks", str(ROOT / "charts" / "booth-notebooks"), "--namespace", NS, "-f", str(values),
+             "--set", "singleuser.networkPolicy.egress.allowInternet=false", "--show-only", "templates/networkpolicies.yaml")
+    (np,) = [d for d in yaml.safe_load_all(out) if d and d["metadata"]["name"] == SINGLEUSER_POLICY]
+    np["metadata"]["namespace"] = NS
+    assert "ipBlock" not in json.dumps(np), "the allowInternet=false render still has an ipBlock rule"
+    return json.dumps(np)
+
+
+def put_policy(doc: str | None) -> None:
+    """Replace the singleuser policy with ``doc``; None deletes it."""
+    kubectl("-n", NS, "delete", "networkpolicy", SINGLEUSER_POLICY, "--ignore-not-found", "--wait")
+    if doc:
+        kubectl("-n", NS, "create", "-f", "-", input=doc)
+
+
+def test_notebook_pod_egress_is_enforced_reachable_blocked_reachable(base, tmp_path):
+    """The shipped egress policy (default values: allowInternet on, no opt-ins), tested as the CNI enforces
+    it. Denied: the hub's own database, booth-database before opting in, the Kubernetes API and the
+    kubelet on the node, and one LAN host in each range the internet rule excludes (10/8, 172.16/12,
+    192.168/16, 100.64/10, metadata 169.254.169.254). With allowInternet=false (the chart's own render),
+    the internet too. Allowed while applied: DNS, the hub API, booth-core, the internet, and a host outside
+    the excluded ranges reached through the same listener as the LAN hosts."""
+    notebook = notebook_pod(ACME)["metadata"]["name"]
+    own_db = pod_ip(NS, "app=postgres")
     kubectl("create", "namespace", "booth-database", check=False)
     kubectl("apply", "-n", "booth-database", "-f", str(FIX / "booth-database-postgres.yaml"))
     kubectl("-n", "booth-database", "rollout", "status", "deployment/booth-database-postgres", "--timeout=180s")
+    booth_db = pod_ip("booth-database", "app.kubernetes.io/name=booth-database,app.kubernetes.io/component=postgres")
+    node = kubectl("get", "nodes", "-o", "jsonpath={.items[0].status.addresses[?(@.type=='InternalIP')].address}").strip()
+    hub = pod_ip(NS, "app.kubernetes.io/component=hub")
+    core = pod_ip(CORE_NS, "app.kubernetes.io/name=booth-core")
+    print(f"targets: own db {own_db}, booth-database {booth_db}, node {node}, hub {hub}, core {core}")
+
+    denied = {
+        "the hub's own database :5432": [own_db, 5432],
+        "booth-database, not opted in :5432": [booth_db, 5432],
+        "the Kubernetes API on the node :6443": [node, 6443],
+        "the kubelet on the node :10250": [node, 10250],
+    }
+    port = int(LAN["LAN_PORT"])
+    lan = {f"LAN {cidr} ({LAN[k]}) :{port}": [LAN[k], port] for k, cidr in
+           (("LAN_10", "10.0.0.0/8"), ("LAN_172", "172.16.0.0/12"), ("LAN_192", "192.168.0.0/16"),
+            ("LAN_CGNAT", "100.64.0.0/10"), ("LAN_METADATA", "169.254.0.0/16"))}
+    lan_control = {f"outside the excluded ranges ({LAN['LAN_CONTROL']}) :{port}": [LAN["LAN_CONTROL"], port]}
+    internet = {"the internet (1.1.1.1:443)": ["1.1.1.1", 443]}
+    allowed = {"the hub API :8081": [hub, 8081], "booth-core :8080": [core, 8080]}
+
+    original = live_policy()
+    try:
+        # 1. Policy deleted: every target answers this pod, so a later block is the policy, not the target.
+        put_policy(None)
+        if not LAN_REQUIRED and any(v != "open" for v in probe(notebook, {**lan, **lan_control}, None).values()):
+            print("LAN targets do not answer (cni/lan-targets.sh not run, BOOTH_LAN_TARGETS unset): LAN probes skipped")
+            lan, lan_control = {}, {}
+        everything = {**denied, **lan, **lan_control, **internet, **allowed}
+        settle(notebook, everything, ("open",), "1. policy deleted: all reachable")
+
+        # 2. The shipped policy applied: the denied set is blocked, the allowed set still connects.
+        put_policy(original)
+        settle(notebook, {**denied, **lan}, BLOCKED, "2. policy applied: denied blocked")
+        r = settle(notebook, {**allowed, **internet, **lan_control}, ("open",), "2. policy applied: allowed open")
+        assert r["dns"] == kubectl("get", "svc", "kubernetes", "-o", "jsonpath={.spec.clusterIP}").strip(), r
+
+        # 2b. allowInternet=false, the chart's own render: the internet is blocked too.
+        put_policy(closed_policy(tmp_path))
+        settle(notebook, {**denied, **lan, **internet, **lan_control}, BLOCKED, "2b. allowInternet=false: internet blocked too")
+        r = settle(notebook, allowed, ("open",), "2b. allowInternet=false: allowed open")
+        assert not r["dns"].startswith("failed"), r
+
+        # 3. Policy deleted again: the same targets answer again.
+        put_policy(None)
+        settle(notebook, everything, ("open",), "3. policy deleted again: all reachable")
+    finally:
+        put_policy(original)
+    settle(notebook, {**denied, **lan}, BLOCKED, "restored: denied blocked")
+
+
+def test_booth_database_is_reachable_only_after_opting_in_and_the_hubs_own_database_never(base):
+    """ADR 0092 (as amended): setting boothDatabase.url adds the rule to booth-database's Postgres, and the
+    hub's own database stays blocked. Both addresses, on this port, were shown reachable / blocked /
+    reachable by the test above. Mirrors booth-pipeline's step for its runner (eb67c2b)."""
+    notebook = notebook_pod(ACME)["metadata"]["name"]
+    own_db = pod_ip(NS, "app=postgres")
+    booth_db = pod_ip("booth-database", "app.kubernetes.io/name=booth-database,app.kubernetes.io/component=postgres")
+    settle(notebook, {"booth-database :5432": [booth_db, 5432], "the hub's own database :5432": [own_db, 5432]},
+           BLOCKED, "before opting in: both blocked")
     bdb = "booth-database-postgres.booth-database.svc.cluster.local"
-    own = f"postgres.{NS}.svc.cluster.local"  # the hub's own database (the stand-in for core's provisioned one)
-
-    def reaches(target: str, host: str) -> bool:
-        code = "import socket, sys; socket.create_connection((sys.argv[1], 5432), timeout=5)"
-        out = subprocess.run(["kubectl", "--context", f"kind-{CLUSTER}", "-n", NS, "exec", target, "--", "python", "-c", code, host],
-                             capture_output=True, text=True)
-        return out.returncode == 0
-
-    notebook = "pod/" + notebook_pod(ACME)["metadata"]["name"]
-    hub = "deploy/notebooks-booth-notebooks-hub"
-    # Controls: the hub legitimately uses its own database, and the booth-database address is live.
-    assert reaches(hub, own), "control failed: the hub cannot reach its own database"
-    assert not reaches(notebook, bdb), "booth-database was reachable from a notebook pod before opting in"
-    assert not reaches(notebook, own), "a notebook pod reached the hub's own database"
 
     sh("helm", "--kube-context", f"kind-{CLUSTER}", "upgrade", "notebooks", str(ROOT / "charts" / "booth-notebooks"),
        "--namespace", NS, "--reuse-values", "--set", f"boothDatabase.url={bdb}:5432",
@@ -299,8 +425,8 @@ def test_booth_database_is_reachable_only_after_opting_in_and_the_hubs_own_datab
        "--set-json", 'singleuser.networkPolicy.egress.boothStorage.namespaceSelector={"kubernetes.io/metadata.name":"storage"}',
        "--set-json", 'singleuser.networkPolicy.egress.boothStorage.podSelector={"app":"minio"}',
        "--wait", "--timeout", "5m")
-    wait_for(lambda: reaches(notebook, bdb), 60, "booth-database to become reachable after setting boothDatabase.url")
-    assert not reaches(notebook, own), "after opting in, a notebook pod reached the hub's OWN database"
+    settle(notebook, {"booth-database :5432": [booth_db, 5432]}, ("open",), "after opting in: booth-database reachable")
+    settle(notebook, {"the hub's own database :5432": [own_db, 5432]}, BLOCKED, "after opting in: the hub's own database still blocked")
 
 
 def test_servers_survive_a_hub_restart(base, core):

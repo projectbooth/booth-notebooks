@@ -3,8 +3,9 @@ name: Integration
 # Layer 3 (contracts/testing-strategy.md, ADR 0024): the chart on a real kind cluster, spawning and
 # tearing down real KubeSpawner notebook pods. On merge to main and nightly, not on every push/PR.
 # Same script developers run locally (hack/kind-integration.sh); see tests/integration/test_kind.py
-# for exactly what it covers and what it does not (booth-core itself). kind's default CNI enforces
-# NetworkPolicy, which the notebook-pod egress step (ADR 0092) relies on.
+# for exactly what it covers and what it does not (booth-core itself). The cluster runs Calico, not
+# kind's default kindnet, which enforces NetworkPolicy ingress but not egress (ARCHITECTURE item 60):
+# the notebook-pod egress test asserts denials, each reachable / blocked / reachable on one target.
 on:
   push:
     branches: [main]
@@ -25,12 +26,22 @@ jobs:
         with:
           python-version: "3.13"
       - uses: azure/setup-helm@v4
+      # kind and its node image pinned as booth-streamlit and booth-spark pin them; Calico from
+      # tests/integration/cni/ (the same manifest sha256 and image digests as booth-streamlit).
       - uses: helm/kind-action@v1
         with:
+          version: v0.33.0
+          node_image: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
           cluster_name: booth-notebooks-it
+          config: tests/integration/cni/kind-calico.yaml
+      - name: Calico (pinned manifest and image digests), for NetworkPolicy egress enforcement
+        run: tests/integration/cni/calico.sh
+      - name: LAN hosts for the egress test (one answering address per excluded range, on the kind host)
+        run: tests/integration/cni/lan-targets.sh booth-notebooks-it
       - name: Install test dependencies
         run: pip install -e ".[dev]" -e client
       - name: Build, load, deploy, spawn, tear down
         env:
           BOOTH_KIND_CLUSTER: booth-notebooks-it
+          BOOTH_LAN_TARGETS: "1" # the LAN probes are required here, not skipped
         run: sh hack/kind-integration.sh

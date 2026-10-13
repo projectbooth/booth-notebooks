@@ -151,7 +151,7 @@ sh hack/kind-integration.sh                                 # layer 3: needs doc
 | `tests/hub` | a **real JupyterHub process** with this config (only spawner/proxy swapped): login, per-request re-verification, workspace switch, platform tokens, refusals |
 | `tests/contract` | the BoothModule manifest vs. module-manifest.md, the credential/RBAC/network topology, and that the chart's rendered env is a valid `hubconfig` |
 | `tests/realstack` | **real booth-core + booth-design shell + Keycloak**: iframe URL, core's signed assertion, spawn, a kernel websocket through the shell, a core-minted platform token (`hack/real-stack-e2e.md`) |
-| `tests/integration` | on kind, stand-in core: deploy, spawn a real pod, JupyterLab through the proxy, kernel → hub → mint → gateway, hub restart without losing servers, a second workspace's pod, teardown keeps the home volume |
+| `tests/integration` | on kind with Calico (`tests/integration/cni/`), stand-in core: deploy, spawn a real pod, JupyterLab through the proxy, kernel → hub → mint → gateway, notebook-pod egress (each denial reachable / blocked / reachable on one target, LAN hosts included), hub restart without losing servers, a second workspace's pod, teardown keeps the home volume |
 
 CI: `.github/workflows/ci.yml` (layers 1–2 plus image builds, every push/PR, required on `main` via branch
 protection), `.github/workflows/integration.yml` (layer 3, merge to `main` and nightly).

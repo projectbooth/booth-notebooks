@@ -64,6 +64,11 @@ should be ratified explicitly.
   prove them. That was wrong for current kind: its default CNI (kindnet, kind v0.30 / Kubernetes 1.34 here)
   enforces NetworkPolicy. The ADR 0092 Integration step proves it by blocking a notebook pod's connection to
   the hub's own database and to booth-database until opted in (`tests/integration/test_kind.py`).
+  **Second correction (2026-10-13, ARCHITECTURE item 60):** kindnet enforces ingress but not egress
+  (booth-spark measured it on kind v0.33.0), and that step counted any failed connect as "blocked", with no
+  check that the policy was the cause. Integration now runs a digest-pinned Calico, and each egress denial
+  is shown reachable with the policy deleted, blocked with it applied, and reachable again, on the same
+  address and port, including one LAN host per excluded range.
 - **A notebook pod's resources aren't per-workspace quota'd**: each pod has limits, but nothing caps a
   workspace's total. A per-namespace ResourceQuota covers the whole module, not one tenant.
 - **Nothing here has run against a real booth-core.** Core's identity assertion doesn't exist yet (0002).
