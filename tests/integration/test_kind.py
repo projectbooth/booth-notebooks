@@ -345,6 +345,16 @@ def put_policy(doc: str | None) -> None:
         kubectl("-n", NS, "create", "-f", "-", input=doc)
 
 
+def restore_policy(original: str) -> None:
+    """Put back the shipped policy the way it was installed: by Helm, same values. A policy recreated by
+    kubectl would own its fields, and the next helm upgrade (server-side apply) would refuse to change it."""
+    put_policy(None)
+    sh("helm", "--kube-context", f"kind-{CLUSTER}", "upgrade", "notebooks", str(ROOT / "charts" / "booth-notebooks"),
+       "--namespace", NS, "--reuse-values", "--wait", "--timeout", "5m")
+    assert json.loads(live_policy())["spec"] == json.loads(original)["spec"], "helm did not restore the same policy"
+
+
+
 def test_notebook_pod_egress_is_enforced_reachable_blocked_reachable(base, tmp_path):
     """The shipped egress policy (default values: allowInternet on, no opt-ins), tested as the CNI enforces
     it. Denied: the hub's own database, booth-database before opting in, the Kubernetes API and the
@@ -403,8 +413,8 @@ def test_notebook_pod_egress_is_enforced_reachable_blocked_reachable(base, tmp_p
         put_policy(None)
         settle(notebook, everything, ("open",), "3. policy deleted again: all reachable")
     finally:
-        put_policy(original)
-    settle(notebook, {**denied, **lan}, BLOCKED, "restored: denied blocked")
+        restore_policy(original)
+    settle(notebook, {**denied, **lan}, BLOCKED, "restored by helm: denied blocked")
 
 
 def test_booth_database_is_reachable_only_after_opting_in_and_the_hubs_own_database_never(base):
