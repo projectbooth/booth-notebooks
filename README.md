@@ -115,6 +115,12 @@ where the platform's shared identity settings go in this chart:
 Core fills a path only when the install request doesn't set it. A `helm install` from the CLI never runs that
 code and uses the defaults above.
 
+**Startup wait for the hub database.** A new pod's first connections to PostgreSQL can be refused for a few
+seconds (ARCHITECTURE.md item 66). Before JupyterHub connects, the hub retries connection-level failures
+(refused, timeout, DNS, "starting up") from 500 ms doubling to 8 s, for 60 s in all, logging each retry, then
+exits with the last error and the attempt count. A wrong password, a missing database or an SQL error fails at
+once (`src/booth_notebooks/dbwait.py`, a copy of booth-core's `dbwait` pattern).
+
 ### Data lifecycle
 
 - Stopping a server (or the idle culler, default 1 h) deletes its **pod**. The home **volume**
