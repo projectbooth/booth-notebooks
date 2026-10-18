@@ -26,6 +26,13 @@ jobs:
       - uses: azure/setup-helm@v4 # tests/contract renders the chart with `helm template`
       - name: Install
         run: pip install -e ".[dev]" -e client
+      - name: The booth-lakehouse client, at the commit the default kernel image pins
+        # So tests/client binds booth's calls against the real booth_lakehouse instead of skipping that test.
+        run: |
+          sha=$(grep -oE 'booth-lakehouse\.git#[0-9a-f]{40}' images/singleuser/Dockerfile | cut -d'#' -f2)
+          test -n "$sha"
+          pip install "booth-lakehouse-client @ git+https://github.com/projectbooth/booth-lakehouse@${sha}#subdirectory=client"
+          python -c "import booth_lakehouse"
       - name: Lint
         run: ruff check src tests client
       - name: Unit, client, live-hub and contract tests
@@ -72,8 +79,11 @@ jobs:
           docker build -t booth-notebooks-singleuser:ci -f images/singleuser/Dockerfile .
       - name: The hub image has the hub package, KubeSpawner, the culler and a Postgres driver
         run: docker run --rm booth-notebooks-hub:ci python -c "import booth_notebooks, kubespawner, jupyterhub_idle_culler, psycopg2"
-      - name: The default kernel has the documented environment and the booth client
-        run: docker run --rm booth-notebooks-singleuser:ci python -c "import booth, pandas, pyarrow, duckdb, matplotlib; import jupyterhub; assert jupyterhub.__version__.startswith('5.')"
+      - name: The default kernel has the documented environment, the booth client and the lakehouse stack
+        run: docker run --rm booth-notebooks-singleuser:ci python -c "import booth, pandas, pyarrow, duckdb, matplotlib, pyiceberg, booth_lakehouse; from pyiceberg.catalog.rest import RestCatalog; import jupyterhub; assert jupyterhub.__version__.startswith('5.')"
+      - name: In the default kernel, PyIceberg reads an Iceberg table and DuckDB counts its rows per season
+        # images/singleuser/smoke_iceberg.py: a local catalog stands in for booth-lakehouse's (see its docstring).
+        run: docker run --rm -i booth-notebooks-singleuser:ci python - < images/singleuser/smoke_iceberg.py
       - name: The theme-sync JupyterLab extension (ADR 0075) is installed and enabled
         run: docker run --rm --entrypoint jupyter booth-notebooks-singleuser:ci labextension list 2>&1 | grep "@projectbooth/jupyterlab-theme-sync" | grep -q "OK"
       - name: The notebook server honours the shell's framing origin

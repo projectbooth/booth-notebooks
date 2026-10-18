@@ -60,3 +60,20 @@ current client.
   fails with booth-lakehouse's "no credential broker is configured" error without it. The spawner should
   set it (and the pod NetworkPolicy allow it, if the broker isn't behind core's gateway) once ADR 0080's
   broker has an address. Not guessed now.
+
+## Update (2026-10-18): both gaps above closed
+
+- **`booth_lakehouse` is in the default image.** It's `booth-lakehouse-client` 0.1.0, built from booth-lakehouse
+  commit `278a7d6` (tag v0.1.3; its `client/` is unchanged on main) with a BuildKit git `ADD`. The package is
+  still published nowhere (ARCHITECTURE item 43), so a full commit id is the pin. PyIceberg is pinned to 0.12.0,
+  the newest release in the client's `<0.13` range. CI's `python` job installs the same commit, so
+  `test_the_real_booth_lakehouse_client_accepts_what_booth_calls` runs instead of skipping. The `images` job
+  imports the stack in the built image and runs `images/singleuser/smoke_iceberg.py`: PyIceberg writes and
+  reads a real Iceberg table (local SQLite catalog and file warehouse), DuckDB counts its rows per season, and
+  `Lakehouse.from_env` builds from a notebook pod's environment.
+- **The pod has `BOOTH_CREDENTIAL_BROKER_URL`** = `<core.url>/api/credentials`. That is booth-core's broker,
+  which trusts workload tokens the same way as the gateway (core `internal/api/server.go`) and is what the
+  credential sidecar already calls. It's set only when `core.url` is. It's an address, not a credential.
+- **Still not verified end to end:** a read of a real table through real booth-lakehouse, broker and object
+  store from a notebook. Also, the table's files are read from the object store directly, so the notebook egress
+  policy must allow that store's S3 port (README, "Reading Iceberg tables"). By default it doesn't.

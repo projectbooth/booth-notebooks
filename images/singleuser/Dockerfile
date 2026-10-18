@@ -26,10 +26,19 @@ RUN pip install --no-cache-dir \
       "matplotlib>=3.9,<4" \
       "duckdb>=1.1,<2" \
       "psycopg[binary]>=3.2,<4" \
-      "sqlalchemy>=2,<3"
+      "sqlalchemy>=2,<3" \
+      "pyiceberg[pyarrow]==0.12.0"
 
 COPY --chown=1000:100 client /tmp/booth-client
 RUN pip install --no-cache-dir /tmp/booth-client && rm -rf /tmp/booth-client
+
+# Iceberg tables in the workspace's lakehouse (ADR 0079/0085): booth-lakehouse's own client, `booth_lakehouse`
+# (distribution `booth-lakehouse-client` 0.1.0), which `booth.read_dataset` uses for `format: "iceberg"`.
+# It is published nowhere yet (ARCHITECTURE item 43), so it is built from booth-lakehouse's repository, pinned
+# to a full commit (tag v0.1.3); a git commit id names its content exactly. Its PyIceberg dependency is the
+# version pinned above. Bumping the commit is a deliberate change.
+ADD --chown=1000:100 https://github.com/projectbooth/booth-lakehouse.git#278a7d6a5e71679366b59e9cc779d79bbc0a16bf:client /tmp/booth-lakehouse-client
+RUN pip install --no-cache-dir /tmp/booth-lakehouse-client && rm -rf /tmp/booth-lakehouse-client
 
 # Framing: the shell embeds JupyterLab in an iframe (ADR 0005); jupyter_server's default CSP only allows
 # same-origin framing. The hub passes the allowed shell origin(s) in BOOTH_FRAME_ANCESTORS. Appended to
