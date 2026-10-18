@@ -82,6 +82,7 @@ async def test_the_pod_receives_only_jupyterhub_and_booth_settings(pod):
     env = env_of(pod)
     assert env["BOOTH_WORKSPACE"] == "acme"
     assert env["BOOTH_GATEWAY_URL"] == "http://booth-core.booth-system.svc:8080/modules"
+    assert env["BOOTH_CREDENTIAL_BROKER_URL"] == "http://booth-core.booth-system.svc:8080/api/credentials"
     assert env["BOOTH_PLATFORM_TOKEN_PATH"] == "/booth/platform-token"
     assert env["JUPYTERHUB_API_TOKEN"] == "hub-issued-api-token"  # the one per-user credential it gets
     # Nothing from the hub's own environment (env_keep = []), and no module secret in any form.
@@ -97,6 +98,7 @@ async def test_without_core_the_kernel_simply_has_no_gateway(tmp_path):
     """ADR 0006 spirit: the default kernel works with zero other modules installed."""
     pod = await spawner({"BOOTH_CORE_URL": ""}).get_pod_manifest()
     assert "BOOTH_GATEWAY_URL" not in env_of(pod)
+    assert "BOOTH_CREDENTIAL_BROKER_URL" not in env_of(pod)
 
 
 async def test_home_is_a_per_hub_user_volume():

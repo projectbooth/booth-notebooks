@@ -166,6 +166,9 @@ def configure(c, env: Mapping[str, str] | None = None) -> None:  # noqa: PLR0915
     s = c.BoothSpawner
     s.namespace = env.get("POD_NAMESPACE", "") or "default"
     s.gateway_url = gateway
+    # Iceberg tables (booth_lakehouse in the default kernel): a table's data needs a scoped storage credential
+    # from core's broker, requested with the kernel's own platform token (ADR 0080/0084).
+    s.credential_broker_url = f"{core_url}/api/credentials" if core_url else ""
     # ADR 0095: the postgres credential sidecar, behind the same boothDatabase.url gate as the ADR 0092
     # egress rule. It needs core (the broker) and a digest-pinned image; never a floating tag.
     # The third amendment adds s3 mode behind boothStorage.url (booth-pipeline's gate and egress rule);

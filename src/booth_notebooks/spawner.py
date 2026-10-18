@@ -140,6 +140,13 @@ class BoothSpawner(KubeSpawner):
         "platform access, and the default kernel still works (ADR 0006: no other module is required).",
     )
     platform_token_path = Unicode("/booth/platform-token", help="Under JUPYTERHUB_API_URL.")
+    credential_broker_url = Unicode(
+        "",
+        config=True,
+        help="booth-core's credential broker (BOOTH_CORE_URL/api/credentials, ADR 0080), given to kernels as "
+        "BOOTH_CREDENTIAL_BROKER_URL so booth_lakehouse can get a scoped storage credential for a table's data "
+        "as the notebook. An address, never a credential. Empty when there is no core.",
+    )
 
     # ADR 0095: native Postgres access to a workspace's booth-database through booth-core's credential
     # sidecar. Gated by the same boothDatabase.url value as the ADR 0092 egress rule: unset means no
@@ -194,6 +201,8 @@ class BoothSpawner(KubeSpawner):
         env["BOOTH_WORKSPACE"] = workspace_of(self.user.name)
         if self.gateway_url:
             env["BOOTH_GATEWAY_URL"] = self.gateway_url
+        if self.credential_broker_url:
+            env["BOOTH_CREDENTIAL_BROKER_URL"] = self.credential_broker_url
         # JUPYTERHUB_API_URL is set by JupyterHub; the kernel client builds the token URL from it.
         env["BOOTH_PLATFORM_TOKEN_PATH"] = self.platform_token_path
         if self.database_sidecar_enabled:

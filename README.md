@@ -56,12 +56,77 @@ notebook pod ──(Bearer <10-min workload token>, X-Workspace)──▶ booth-
 ## The default kernel environment
 
 `images/singleuser`: Jupyter docker-stacks `base-notebook` (Python 3.12, JupyterLab 4.4, pinned by
-digest) + pandas, pyarrow, duckdb, matplotlib + `booth`, plus `@projectbooth/jupyterlab-theme-sync`, a
+digest) + pandas, pyarrow, duckdb, matplotlib, PyIceberg + `booth` and `booth_lakehouse`, plus `@projectbooth/jupyterlab-theme-sync`, a
 small JupyterLab extension that follows the shell's dark/light toggle live over a same-origin
 `postMessage` handshake (ADR 0075, `images/singleuser/theme-sync/`). **Python only in v0.** See
 [docs/decisions/0001](docs/decisions/0001-default-kernel-python-only.md) for the investigation. Operators can
 add environments with `singleuser.profiles` (a KubeSpawner `profile_list`). Each image needs
 `jupyterhub-singleuser` 5.x and uid 1000/gid 100. Only the default image ships the `booth` client.
+
+### Reading Iceberg tables (the workspace's lakehouse)
+
+The default kernel ships booth-lakehouse's client, `booth_lakehouse` (`booth-lakehouse-client` 0.1.0, built from
+booth-lakehouse commit `278a7d6`, tag v0.1.3), with PyIceberg 0.12.0 and DuckDB. There is no Spark (ADR 0006).
+The table is read as the notebook: the catalog call carries the kernel's own platform token, and each table's
+files are read with a short-lived, read-only storage credential for exactly that table from booth-core's
+broker (ADR 0080). The spawner gives the kernel `BOOTH_GATEWAY_URL`, `BOOTH_WORKSPACE` and
+`BOOTH_CREDENTIAL_BROKER_URL`, so `from_env()` needs no arguments.
+
+```python
+from booth_lakehouse import Lakehouse
+import duckdb
+
+lh = Lakehouse.from_env()
+lh.tables("nfl")                                   # ['nfl.team_game_pbp', ...]
+t = lh.table("nfl.team_game_pbp")
+
+# Rows per season: read only the column needed (a pyarrow Table), then count in DuckDB.
+pbp = t.read(columns=["season"])
+duckdb.sql("SELECT season, count(*) AS plays FROM pbp GROUP BY season ORDER BY season").df()
+
+# The same as a DuckDB view named after the table:
+t.duckdb(columns=["season"]).sql(
+    "SELECT season, count(*) AS plays FROM team_game_pbp GROUP BY season ORDER BY season").df()
+```
+
+With PyIceberg's own API: `t.read(columns=, where=, snapshot_id=)` *is* a PyIceberg scan. `where` is a
+PyIceberg row filter, so `t.read(columns=["season"], where="season >= 2020")` prunes files by partition and
+column statistics before any data is read. `t.iceberg` is the PyIceberg `Table` (schema, snapshots,
+partition spec, history), and `lh.catalog` is the workspace's PyIceberg `RestCatalog` (namespaces,
+`load_table`, metadata). Read data through `t.read()`, not `lh.catalog.load_table(...).scan()`: a table loaded
+straight from the catalog has no storage credential, since the catalog never hands one out.
+
+```python
+t.iceberg.schema()
+[s.snapshot_id for s in t.iceberg.snapshots()]
+recent = t.read(columns=["season", "week"], where="season >= 2020").to_pandas()
+```
+
+A table registered in booth-catalog as an `iceberg` dataset can also be read by its dataset name:
+`booth.read_dataset("team_game_pbp")` (ADR 0085).
+
+**What the deployment needs.** booth-lakehouse installed, and the workspace has a warehouse. The kernel reaches
+the catalog and the broker through booth-core (already allowed). It reads table files from the object store
+directly, so the notebook pods' egress policy must also allow that store's S3 port. Notebook pods may not reach
+in-cluster addresses by default, so add a rule for it. Either:
+- `singleuser.networkPolicy.egress.extra`, which adds only the rule; or
+- `boothStorage.url` with `singleuser.networkPolicy.egress.boothStorage.*`, which also turns on the s3
+  credential sidecar for workspaces with a warehouse (off by default).
+
+For the homelab's SeaweedFS (ADR 0118):
+
+```yaml
+singleuser:
+  networkPolicy:
+    egress:
+      extra:
+        - to:
+            - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: booth-objectstore}}
+              podSelector: {matchLabels: {app.kubernetes.io/name: seaweedfs}}
+          ports: [{protocol: TCP, port: 8333}]
+```
+
+Without that rule, `lh.tables()` and `t.iceberg.schema()` work, but `t.read()` cannot reach the files.
 
 ## Installing
 
